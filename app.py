@@ -1122,9 +1122,9 @@ def main():
             cat2_label="Mentor Behavior Avg",
             qmap=TECH_Q,
             centre_col="Jetking Learning Centre Name",
-            mentor_col="Mentor Name",
+            mentor_col="Technical Mentor Name (Please select from the dropdown)",
             course_col="Course Name",
-            batch_col="Batch Code",
+            batch_col="Batch Code (eg. 2627-JU-1234)",
             comment_cols=TECH_COMMENT_COLS,
             special_cols=TECH_SPECIAL_Q,
         )
@@ -1138,9 +1138,9 @@ def main():
             cat2_label="Mentor Behavior Avg",
             qmap=EMP_Q,
             centre_col="Jetking Learning Centre Name",
-            mentor_col="Employability Mentor Name (Please select from the dropdown)",
+            mentor_col="Mentor Name",
             course_col="Course Name",
-            batch_col="Batch Code (eg. 2627-JU-1234)",
+            batch_col="Batch Code",
             comment_cols=EMP_COMMENT_COLS,
             special_cols=EMP_SPECIAL_Q,
         )

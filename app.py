@@ -40,13 +40,76 @@ PALETTE = {
     "grid": "#e1e0d9",
 }
 
+# Dark mode: chrome (backgrounds, borders, ink) is theme-aware; the data-encoding
+# colors above (PALETTE, LIKERT_COLORS, HEATMAP_COLORSCALE further down) are
+# deliberately NOT re-picked per theme — the same hue always means the same
+# thing in both modes, only the page/card/chart background and text around it
+# changes. Native Streamlit widgets (tabs, selectbox, buttons, dataframe) are
+# handled separately by .streamlit/config.toml's [theme.light]/[theme.dark]
+# tables — this dict only covers the custom HTML/CSS and Plotly chrome below.
+THEMES = {
+    "light": {
+        "surface": "#ffffff",
+        "text": "#0b0b0b",
+        "muted": PALETTE["muted"],
+        "border": PALETTE["grid"],
+        "table_stripe": "#fafaf8",
+        "table_header": f'{PALETTE["grid"]}55',
+        "hero_grad": (PALETTE["series1"], "#184f95"),
+        "chart_bg": "#ffffff",
+        "chart_font": "#33322e",
+        "chart_grid": PALETTE["grid"],
+        "kpi_neutral_bg": "#ffffff",
+        "kpi_neutral_text": "#0b0b0b",
+        "kpi_blue_bg": "#eaf2fc", "kpi_blue_border": PALETTE["series1"], "kpi_blue_text": "#184f95",
+        "kpi_yellow_bg": "#fff6e0", "kpi_yellow_border": "#c98500", "kpi_yellow_text": "#7a5200",
+        "kpi_red_bg": "#fceceb", "kpi_red_border": PALETTE["serious"], "kpi_red_text": "#8a1f1f",
+    },
+    "dark": {
+        "surface": "#1b232c",
+        "text": "#eef1f5",
+        "muted": "#9aa4b1",
+        "border": "#2c3946",
+        "table_stripe": "#20293380",
+        "table_header": "#2c394680",
+        "hero_grad": ("#12895e", "#123a6e"),
+        "chart_bg": "#1b232c",
+        "chart_font": "#c7ced7",
+        "chart_grid": "#33404d",
+        "kpi_neutral_bg": "#1b232c",
+        "kpi_neutral_text": "#eef1f5",
+        "kpi_blue_bg": "#15304f", "kpi_blue_border": "#4f9eea", "kpi_blue_text": "#bfe0ff",
+        "kpi_yellow_bg": "#463710", "kpi_yellow_border": "#e0a83c", "kpi_yellow_text": "#ffdf9e",
+        "kpi_red_bg": "#451e1e", "kpi_red_border": "#e2635f", "kpi_red_text": "#ffd0cc",
+    },
+}
+
+
+def _detect_theme_type():
+    """Reads the viewer's current Streamlit theme (native Settings menu ->
+    Theme -> Light/Dark), so our custom HTML/CSS and Plotly charts can match
+    it. Falls back to "light" on older Streamlit versions that predate
+    st.context.theme (added in 1.51) or if the value is momentarily unset
+    right as a viewer switches themes."""
+    try:
+        t = st.context.theme.type
+        if t in ("light", "dark"):
+            return t
+    except Exception:
+        pass
+    return "light"
+
+
+DARK_MODE = _detect_theme_type() == "dark"
+THEME = THEMES["dark" if DARK_MODE else "light"]
+
 # Page chrome: hero banner, elevated KPI cards color-coded per metric, section
 # headers with an icon + accent rule, and lightly polished tabs/tables/buttons.
 # Purely cosmetic — no effect on data or layout logic below.
 st.markdown(f"""
 <style>
 .hero-banner {{
-    background: linear-gradient(135deg, {PALETTE["series1"]} 0%, #184f95 100%);
+    background: linear-gradient(135deg, {THEME["hero_grad"][0]} 0%, {THEME["hero_grad"][1]} 100%);
     padding: 1.75rem 2rem;
     border-radius: 14px;
     margin-bottom: 1.5rem;
@@ -69,11 +132,11 @@ st.markdown(f"""
    color can reflect its own value (Blue/Yellow/Red thresholds), computed
    in Python and passed in as inline style rather than a fixed CSS rule. */
 .kpi-card {{
-    background: #ffffff;
+    background: {THEME["surface"]};
     border-radius: 12px;
     padding: 1.1rem 0.5rem 1rem;
     box-shadow: 0 1px 3px rgba(11,11,11,0.08), 0 1px 2px rgba(11,11,11,0.05);
-    border: 1px solid {PALETTE["grid"]};
+    border: 1px solid {THEME["border"]};
     border-top: 4px solid {PALETTE["series1"]};
     text-align: center;
     transition: box-shadow 0.15s ease;
@@ -83,7 +146,7 @@ st.markdown(f"""
 }}
 .kpi-label {{
     font-size: 0.875rem;
-    color: {PALETTE["muted"]};
+    color: {THEME["muted"]};
     margin-bottom: 0.35rem;
 }}
 .kpi-value {{
@@ -97,31 +160,33 @@ st.markdown(f"""
     overflow-x: auto;
     border-radius: 10px;
     box-shadow: 0 1px 3px rgba(11,11,11,0.06);
-    border: 1px solid {PALETTE["grid"]};
+    border: 1px solid {THEME["border"]};
     margin-bottom: 0.5rem;
+    background: {THEME["surface"]};
 }}
 .wrapped-table {{
     width: 100%;
     border-collapse: collapse;
     font-size: 0.9rem;
+    color: {THEME["text"]};
 }}
 .wrapped-table th {{
-    background: {PALETTE["grid"]}55;
+    background: {THEME["table_header"]};
     text-align: left;
     padding: 0.55rem 0.75rem;
     font-weight: 700;
-    border-bottom: 2px solid {PALETTE["grid"]};
+    border-bottom: 2px solid {THEME["border"]};
     white-space: nowrap;
 }}
 .wrapped-table td {{
     padding: 0.55rem 0.75rem;
-    border-bottom: 1px solid {PALETTE["grid"]};
+    border-bottom: 1px solid {THEME["border"]};
     white-space: normal;
     overflow-wrap: break-word;
     min-width: 120px;  /* a short value (a name, a city) never gets squeezed into a mid-word break */
     vertical-align: top;
 }}
-.wrapped-table tbody tr:nth-child(even) {{ background: #fafaf8; }}
+.wrapped-table tbody tr:nth-child(even) {{ background: {THEME["table_stripe"]}; }}
 
 /* Custom chart legend — used INSTEAD of Plotly's own built-in legend on every
    chart that has one. Plotly's horizontal legend doesn't wrap: on a narrow
@@ -134,7 +199,7 @@ st.markdown(f"""
     gap: 0.3rem 1rem;
     margin: 0.1rem 0 0.6rem 0;
     font-size: 0.82rem;
-    color: {PALETTE["muted"]};
+    color: {THEME["muted"]};
 }}
 .chart-legend .legend-chip {{
     display: inline-flex;
@@ -156,7 +221,7 @@ st.markdown(f"""
     gap: 0.55rem;
     margin: 1.9rem 0 0.85rem 0;
     padding-bottom: 0.45rem;
-    border-bottom: 2px solid {PALETTE["grid"]};
+    border-bottom: 2px solid {THEME["border"]};
 }}
 .section-header .icon {{ font-size: 1.35rem; line-height: 1; }}
 .section-header h3 {{ margin: 0; font-size: 1.28rem; font-weight: 700; }}
@@ -529,15 +594,16 @@ def build_action_items(filt_resp, filt_q, cat1_label, cat2_label, threshold=3.0)
 def score_color(score):
     """Blue/Yellow/Red thresholds for KPI scorecards: >3.5 is healthy (blue),
     2.5-3.49 is borderline (yellow), <2.5 needs attention (red). A score of
-    None (no responses yet, or not a 1-5 score at all) stays neutral gray."""
+    None (no responses yet, or not a 1-5 score at all) stays neutral gray.
+    Colors come from THEME so they stay legible in both light and dark mode."""
     if score is None:
-        return {"bg": "#ffffff", "border": PALETTE["muted"], "text": "#0b0b0b"}
+        return {"bg": THEME["kpi_neutral_bg"], "border": THEME["muted"], "text": THEME["kpi_neutral_text"]}
     if score > 3.5:
-        return {"bg": "#eaf2fc", "border": PALETTE["series1"], "text": "#184f95"}
+        return {"bg": THEME["kpi_blue_bg"], "border": THEME["kpi_blue_border"], "text": THEME["kpi_blue_text"]}
     elif score >= 2.5:
-        return {"bg": "#fff6e0", "border": "#c98500", "text": "#7a5200"}
+        return {"bg": THEME["kpi_yellow_bg"], "border": THEME["kpi_yellow_border"], "text": THEME["kpi_yellow_text"]}
     else:
-        return {"bg": "#fceceb", "border": PALETTE["serious"], "text": "#8a1f1f"}
+        return {"bg": THEME["kpi_red_bg"], "border": THEME["kpi_red_border"], "text": THEME["kpi_red_text"]}
 
 
 def kpi_card(label, display_value, score_for_color, help_text=None):
@@ -595,14 +661,15 @@ def trend_chart(trend_df):
         pad = pd.Timedelta(days=max(1, round(span_days * 0.1)))
         x_range = [dates.min() - pad, dates.max() + pad]
         dtick = None  # let Plotly choose a sensible interval for a wider spread
-    xaxis_kwargs = dict(type="date", tickformat="%b %d, %Y", range=x_range, gridcolor=PALETTE["grid"])
+    xaxis_kwargs = dict(type="date", tickformat="%b %d, %Y", range=x_range, gridcolor=THEME["chart_grid"])
     if dtick:
         xaxis_kwargs["dtick"] = dtick
     fig.update_layout(
-        yaxis=dict(range=[0, 5], gridcolor=PALETTE["grid"]),
+        yaxis=dict(range=[0, 5], gridcolor=THEME["chart_grid"]),
         xaxis=xaxis_kwargs,
         height=280, margin=dict(t=10, b=10, l=10, r=10),
-        plot_bgcolor="white", showlegend=False,
+        plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
+        font=dict(color=THEME["chart_font"]), showlegend=False,
     )
     st.plotly_chart(fig, width="stretch")
 
@@ -620,11 +687,12 @@ def grouped_breakdown_chart(df_group, cat1_label, cat2_label):
                 marker_color=PALETTE["series2"],
                 hovertemplate="%{y}<br>" + cat2_label + ": <b>%{x:.2f}</b> / 5<extra></extra>")
     fig.update_layout(
-        barmode="group", xaxis=dict(range=[0, 5], gridcolor=PALETTE["grid"], automargin=True),
+        barmode="group", xaxis=dict(range=[0, 5], gridcolor=THEME["chart_grid"], automargin=True),
         yaxis=dict(automargin=True),
         showlegend=False,
         height=110 + 55 * len(df_group), margin=dict(t=10, b=10, l=10, r=10),
-        plot_bgcolor="white",
+        plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
+        font=dict(color=THEME["chart_font"]),
     )
     render_chart_legend([(cat1_label, PALETTE["series1"]), (cat2_label, PALETTE["series2"])])
     st.plotly_chart(fig, width="stretch")
@@ -646,9 +714,10 @@ def question_chart(qrank_df, color, label):
         hovertemplate="%{y}<br><b>%{x:.2f}</b> / 5<extra></extra>",
     )
     fig.update_layout(
-        xaxis=dict(range=[0, 6], gridcolor=PALETTE["grid"], automargin=True),
+        xaxis=dict(range=[0, 6], gridcolor=THEME["chart_grid"], automargin=True),
         height=80 + 40 * len(qrank_df), margin=dict(t=10, b=10, l=10, r=40),
-        plot_bgcolor="white", showlegend=False,
+        plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
+        font=dict(color=THEME["chart_font"]), showlegend=False,
         yaxis=dict(autorange="reversed", automargin=True),
     )
     st.plotly_chart(fig, width="stretch")
@@ -676,7 +745,8 @@ def heatmap_chart(matrix_df, code_text):
     # colorbar's 5 tick labels enough room not to overlap.
     fig.update_layout(
         height=max(220, 80 + 36 * len(matrix_df.index)), margin=dict(t=30, b=10, l=10, r=10),
-        plot_bgcolor="white",
+        plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
+        font=dict(color=THEME["chart_font"]),
         xaxis=dict(side="top", title="Question code", automargin=True),
         yaxis=dict(automargin=True),
     )
@@ -710,11 +780,12 @@ def distribution_chart(dist_df):
     fig.add_trace(bar(pos5, 5, True))
     fig.update_layout(
         barmode="relative",
-        xaxis=dict(title="% of responses", ticksuffix="%", range=[-100, 100], gridcolor=PALETTE["grid"]),
+        xaxis=dict(title="% of responses", ticksuffix="%", range=[-100, 100], gridcolor=THEME["chart_grid"]),
         yaxis=dict(automargin=True),
         showlegend=False,
         height=90 + 40 * len(dist_df), margin=dict(t=10, b=10, l=10, r=10),
-        plot_bgcolor="white",
+        plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
+        font=dict(color=THEME["chart_font"]),
     )
     render_chart_legend([(LIKERT_LABELS[v], LIKERT_COLORS[v]) for v in (1, 2, 3, 4, 5)])
     st.plotly_chart(fig, width="stretch")
@@ -763,11 +834,12 @@ def categorical_question_chart(filt_resp, spec):
         )
     fig.update_layout(
         barmode="stack",
-        xaxis=dict(title="% of responses", ticksuffix="%", range=[0, 100], gridcolor=PALETTE["grid"]),
+        xaxis=dict(title="% of responses", ticksuffix="%", range=[0, 100], gridcolor=THEME["chart_grid"]),
         yaxis=dict(showticklabels=False),
         showlegend=False,
         height=130, margin=dict(t=10, b=30, l=10, r=10),
-        plot_bgcolor="white",
+        plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
+        font=dict(color=THEME["chart_font"]),
     )
     render_chart_legend([(opt, spec["colors"][opt]) for opt in spec["options"]])
     st.plotly_chart(fig, width="stretch")

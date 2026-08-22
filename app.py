@@ -123,6 +123,33 @@ st.markdown(f"""
 }}
 .wrapped-table tbody tr:nth-child(even) {{ background: #fafaf8; }}
 
+/* Custom chart legend — used INSTEAD of Plotly's own built-in legend on every
+   chart that has one. Plotly's horizontal legend doesn't wrap: on a narrow
+   (mobile) screen its items just squeeze into the available width and their
+   text overlaps. A plain flex-wrap row never does that — items simply drop
+   to a second line once they run out of horizontal room, on any screen size. */
+.chart-legend {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 1rem;
+    margin: 0.1rem 0 0.6rem 0;
+    font-size: 0.82rem;
+    color: {PALETTE["muted"]};
+}}
+.chart-legend .legend-chip {{
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    white-space: nowrap;
+}}
+.chart-legend .legend-swatch {{
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    flex-shrink: 0;
+}}
+
 .section-header {{
     display: flex;
     align-items: center;
@@ -154,6 +181,18 @@ div[data-testid="stVerticalBlockBorderWrapper"] {{
     border-radius: 12px;
     box-shadow: 0 1px 4px rgba(11,11,11,0.06);
 }}
+
+/* Phone-width tightening — the layout above already reflows fine (Streamlit
+   stacks columns automatically below ~640px), this just scales down a few
+   elements that are sized for desktop by default so nothing feels oversized
+   or cramped on a small screen. */
+@media (max-width: 480px) {{
+    .hero-banner {{ padding: 1.1rem 1.25rem; }}
+    .hero-banner h1 {{ font-size: 1.5rem; }}
+    .hero-banner p {{ font-size: 0.85rem; }}
+    .kpi-value {{ font-size: 1.5rem; }}
+    .section-header h3 {{ font-size: 1.1rem; }}
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -165,6 +204,18 @@ def section_header(icon, text):
         f'<div class="section-header"><span class="icon">{icon}</span><h3>{text}</h3></div>',
         unsafe_allow_html=True,
     )
+
+
+def render_chart_legend(items):
+    """items: list of (label, hex_color). Renders a wrapping HTML legend in
+    place of Plotly's built-in one — see the .chart-legend CSS comment above
+    for why (mobile overlap). Call this right before st.plotly_chart() on a
+    figure that has showlegend=False."""
+    chips = "".join(
+        f'<span class="legend-chip"><span class="legend-swatch" style="background:{color};"></span>{html.escape(str(label))}</span>'
+        for label, color in items
+    )
+    st.markdown(f'<div class="chart-legend">{chips}</div>', unsafe_allow_html=True)
 
 # Diverging blue<->red scale for the heatmap (magnitude with a meaningful
 # neutral midpoint at 3/5) and the 5-point Likert distribution chart —
@@ -569,11 +620,13 @@ def grouped_breakdown_chart(df_group, cat1_label, cat2_label):
                 marker_color=PALETTE["series2"],
                 hovertemplate="%{y}<br>" + cat2_label + ": <b>%{x:.2f}</b> / 5<extra></extra>")
     fig.update_layout(
-        barmode="group", xaxis=dict(range=[0, 5], gridcolor=PALETTE["grid"]),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-        height=110 + 55 * len(df_group), margin=dict(t=40, b=10, l=10, r=10),
+        barmode="group", xaxis=dict(range=[0, 5], gridcolor=PALETTE["grid"], automargin=True),
+        yaxis=dict(automargin=True),
+        showlegend=False,
+        height=110 + 55 * len(df_group), margin=dict(t=10, b=10, l=10, r=10),
         plot_bgcolor="white",
     )
+    render_chart_legend([(cat1_label, PALETTE["series1"]), (cat2_label, PALETTE["series2"])])
     st.plotly_chart(fig, width="stretch")
     flagged = df_group[(df_group["cat1"] < 3) | (df_group["cat2"] < 3)]
     if not flagged.empty:
@@ -593,10 +646,10 @@ def question_chart(qrank_df, color, label):
         hovertemplate="%{y}<br><b>%{x:.2f}</b> / 5<extra></extra>",
     )
     fig.update_layout(
-        xaxis=dict(range=[0, 6], gridcolor=PALETTE["grid"]),
+        xaxis=dict(range=[0, 6], gridcolor=PALETTE["grid"], automargin=True),
         height=80 + 40 * len(qrank_df), margin=dict(t=10, b=10, l=10, r=40),
         plot_bgcolor="white", showlegend=False,
-        yaxis=dict(autorange="reversed"),
+        yaxis=dict(autorange="reversed", automargin=True),
     )
     st.plotly_chart(fig, width="stretch")
     flagged = qrank_df[qrank_df["avg"] < 3]
@@ -622,11 +675,13 @@ def heatmap_chart(matrix_df, code_text):
     # Floor the height so a short heatmap (few mentors) still leaves the
     # colorbar's 5 tick labels enough room not to overlap.
     fig.update_layout(
-        height=max(220, 80 + 36 * len(matrix_df.index)), margin=dict(t=10, b=10, l=10, r=10),
+        height=max(220, 80 + 36 * len(matrix_df.index)), margin=dict(t=30, b=10, l=10, r=10),
         plot_bgcolor="white",
-        xaxis=dict(side="top", title="Question code (hover for question)"),
+        xaxis=dict(side="top", title="Question code", automargin=True),
+        yaxis=dict(automargin=True),
     )
     st.plotly_chart(fig, width="stretch")
+    st.caption("Hover a cell to see the full question.")
 
 
 def distribution_chart(dist_df):
@@ -656,10 +711,12 @@ def distribution_chart(dist_df):
     fig.update_layout(
         barmode="relative",
         xaxis=dict(title="% of responses", ticksuffix="%", range=[-100, 100], gridcolor=PALETTE["grid"]),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-        height=90 + 40 * len(dist_df), margin=dict(t=40, b=10, l=10, r=10),
+        yaxis=dict(automargin=True),
+        showlegend=False,
+        height=90 + 40 * len(dist_df), margin=dict(t=10, b=10, l=10, r=10),
         plot_bgcolor="white",
     )
+    render_chart_legend([(LIKERT_LABELS[v], LIKERT_COLORS[v]) for v in (1, 2, 3, 4, 5)])
     st.plotly_chart(fig, width="stretch")
 
 
@@ -708,10 +765,11 @@ def categorical_question_chart(filt_resp, spec):
         barmode="stack",
         xaxis=dict(title="% of responses", ticksuffix="%", range=[0, 100], gridcolor=PALETTE["grid"]),
         yaxis=dict(showticklabels=False),
-        legend=dict(orientation="h", yanchor="bottom", y=1.2, xanchor="left", x=0),
-        height=170, margin=dict(t=55, b=30, l=10, r=10),
+        showlegend=False,
+        height=130, margin=dict(t=10, b=30, l=10, r=10),
         plot_bgcolor="white",
     )
+    render_chart_legend([(opt, spec["colors"][opt]) for opt in spec["options"]])
     st.plotly_chart(fig, width="stretch")
 
 

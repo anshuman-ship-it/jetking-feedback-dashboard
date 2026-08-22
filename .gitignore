@@ -1,0 +1,11 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Real credentials — never commit these
+.streamlit/secrets.toml
+
+# Editor/OS cruft
+.vscode/
+.DS_Store

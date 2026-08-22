@@ -2,3 +2,4 @@ streamlit>=1.32
 pandas>=2.0
 requests>=2.28
 plotly>=5.18
+tzdata>=2024.1

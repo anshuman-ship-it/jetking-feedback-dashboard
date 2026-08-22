@@ -14,6 +14,9 @@ import html
 import io
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 import streamlit as st
 import pandas as pd
@@ -304,7 +307,7 @@ def load_sheet(endpoint_key):
             resp.raise_for_status()
             df = pd.read_csv(io.StringIO(resp.text))
             df.columns = [str(c).replace("\n", " ").strip() for c in df.columns]
-            return df, datetime.now()
+            return df, datetime.now(IST)
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
             last_err = e
             if attempt < 2:

@@ -661,11 +661,14 @@ def trend_chart(trend_df):
         pad = pd.Timedelta(days=max(1, round(span_days * 0.1)))
         x_range = [dates.min() - pad, dates.max() + pad]
         dtick = None  # let Plotly choose a sensible interval for a wider spread
-    xaxis_kwargs = dict(type="date", tickformat="%b %d, %Y", range=x_range, gridcolor=THEME["chart_grid"])
+    xaxis_kwargs = dict(
+        type="date", tickformat="%b %d, %Y", range=x_range, gridcolor=THEME["chart_grid"],
+        tickfont=dict(color=THEME["chart_font"]),
+    )
     if dtick:
         xaxis_kwargs["dtick"] = dtick
     fig.update_layout(
-        yaxis=dict(range=[0, 5], gridcolor=THEME["chart_grid"]),
+        yaxis=dict(range=[0, 5], gridcolor=THEME["chart_grid"], tickfont=dict(color=THEME["chart_font"])),
         xaxis=xaxis_kwargs,
         height=280, margin=dict(t=10, b=10, l=10, r=10),
         plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
@@ -687,8 +690,9 @@ def grouped_breakdown_chart(df_group, cat1_label, cat2_label):
                 marker_color=PALETTE["series2"],
                 hovertemplate="%{y}<br>" + cat2_label + ": <b>%{x:.2f}</b> / 5<extra></extra>")
     fig.update_layout(
-        barmode="group", xaxis=dict(range=[0, 5], gridcolor=THEME["chart_grid"], automargin=True),
-        yaxis=dict(automargin=True),
+        barmode="group",
+        xaxis=dict(range=[0, 5], gridcolor=THEME["chart_grid"], automargin=True, tickfont=dict(color=THEME["chart_font"])),
+        yaxis=dict(automargin=True, tickfont=dict(color=THEME["chart_font"])),
         showlegend=False,
         height=110 + 55 * len(df_group), margin=dict(t=10, b=10, l=10, r=10),
         plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
@@ -709,16 +713,16 @@ def question_chart(qrank_df, color, label):
     fig.add_bar(
         y=qrank_df["label"], x=qrank_df["avg"], orientation="h",
         marker_color=color, text=qrank_df["avg"].map(lambda v: f"{v:.2f}"),
-        textposition="outside",
+        textposition="outside", textfont=dict(color=THEME["chart_font"]),
         cliponaxis=False,  # otherwise labels near the right edge get cut off
         hovertemplate="%{y}<br><b>%{x:.2f}</b> / 5<extra></extra>",
     )
     fig.update_layout(
-        xaxis=dict(range=[0, 6], gridcolor=THEME["chart_grid"], automargin=True),
+        xaxis=dict(range=[0, 6], gridcolor=THEME["chart_grid"], automargin=True, tickfont=dict(color=THEME["chart_font"])),
         height=80 + 40 * len(qrank_df), margin=dict(t=10, b=10, l=10, r=40),
         plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
         font=dict(color=THEME["chart_font"]), showlegend=False,
-        yaxis=dict(autorange="reversed", automargin=True),
+        yaxis=dict(autorange="reversed", automargin=True, tickfont=dict(color=THEME["chart_font"])),
     )
     st.plotly_chart(fig, width="stretch")
     flagged = qrank_df[qrank_df["avg"] < 3]
@@ -738,7 +742,11 @@ def heatmap_chart(matrix_df, code_text):
         texttemplate="%{text}",
         customdata=[[code_text.get(c, c) for c in matrix_df.columns] for _ in matrix_df.index],
         hovertemplate="%{customdata}<br><b>%{z:.2f}</b> / 5<extra></extra>",
-        colorbar=dict(title="Avg", tickvals=[1, 2, 3, 4, 5], lenmode="pixels", len=140, thickness=14),
+        colorbar=dict(
+            title=dict(text="Avg", font=dict(color=THEME["chart_font"])),
+            tickvals=[1, 2, 3, 4, 5], tickfont=dict(color=THEME["chart_font"]),
+            lenmode="pixels", len=140, thickness=14,
+        ),
         xgap=2, ygap=2,
     ))
     # Floor the height so a short heatmap (few mentors) still leaves the
@@ -747,8 +755,11 @@ def heatmap_chart(matrix_df, code_text):
         height=max(220, 80 + 36 * len(matrix_df.index)), margin=dict(t=30, b=10, l=10, r=10),
         plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
         font=dict(color=THEME["chart_font"]),
-        xaxis=dict(side="top", title="Question code", automargin=True),
-        yaxis=dict(automargin=True),
+        xaxis=dict(
+            side="top", automargin=True, tickfont=dict(color=THEME["chart_font"]),
+            title=dict(text="Question code", font=dict(color=THEME["chart_font"])),
+        ),
+        yaxis=dict(automargin=True, tickfont=dict(color=THEME["chart_font"])),
     )
     st.plotly_chart(fig, width="stretch")
     st.caption("Hover a cell to see the full question.")
@@ -780,8 +791,12 @@ def distribution_chart(dist_df):
     fig.add_trace(bar(pos5, 5, True))
     fig.update_layout(
         barmode="relative",
-        xaxis=dict(title="% of responses", ticksuffix="%", range=[-100, 100], gridcolor=THEME["chart_grid"]),
-        yaxis=dict(automargin=True),
+        xaxis=dict(
+            title=dict(text="% of responses", font=dict(color=THEME["chart_font"])),
+            ticksuffix="%", range=[-100, 100], gridcolor=THEME["chart_grid"],
+            tickfont=dict(color=THEME["chart_font"]),
+        ),
+        yaxis=dict(automargin=True, tickfont=dict(color=THEME["chart_font"])),
         showlegend=False,
         height=90 + 40 * len(dist_df), margin=dict(t=10, b=10, l=10, r=10),
         plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
@@ -834,7 +849,11 @@ def categorical_question_chart(filt_resp, spec):
         )
     fig.update_layout(
         barmode="stack",
-        xaxis=dict(title="% of responses", ticksuffix="%", range=[0, 100], gridcolor=THEME["chart_grid"]),
+        xaxis=dict(
+            title=dict(text="% of responses", font=dict(color=THEME["chart_font"])),
+            ticksuffix="%", range=[0, 100], gridcolor=THEME["chart_grid"],
+            tickfont=dict(color=THEME["chart_font"]),
+        ),
         yaxis=dict(showticklabels=False),
         showlegend=False,
         height=130, margin=dict(t=10, b=30, l=10, r=10),

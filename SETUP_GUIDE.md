@@ -1,10 +1,10 @@
 # Setup Guide — Jetking Feedback Dashboards (Streamlit)
 
-This app reads live from the Technical and Employability Session Feedback
-Google Sheets and renders the same dashboards as the HTML preview, but always
-current. It reads each sheet through its **"Publish to web" CSV link** —
-just your normal Google account, no Google Cloud project, service account,
-or Apps Script needed.
+This app reads live from the Technical, Employability, and Centre
+Infrastructure Feedback Google Sheets and renders the same dashboards as the
+HTML preview, but always current. It reads each sheet through its **"Publish
+to web" CSV link** — just your normal Google account, no Google Cloud
+project, service account, or Apps Script needed.
 
 (We tried an Apps Script Web App first, which is normally a fine no-Cloud
 option — but Jetking's Google Workspace domain has an admin policy that
@@ -15,8 +15,8 @@ why we're using it instead.)
 
 ## 1. Publish each Sheet to the web
 
-You'll do this twice — once for the Technical sheet, once for the
-Employability sheet.
+You'll do this three times — once each for the Technical, Employability, and
+Centre Infrastructure sheets.
 
 1. Open the **Technical Session Feedback Form (Responses)** sheet.
 2. **File → Share → Publish to web.**
@@ -29,6 +29,8 @@ Employability sheet.
    This is your `technical_url`.
 6. Repeat steps 1–5 for the **Employability Session Feedback Form
    (Responses)** sheet to get your `employability_url`.
+7. Repeat steps 1–5 again for the **Centre Infrastructure Feedback Form
+   (Responses)** sheet to get your `infrastructure_url`.
 
 **Privacy note:** once published, that URL returns the raw response data
 (student names, mentor names, all scores) to anyone who has it — no Google
@@ -43,15 +45,15 @@ org policy entirely.
 
 ## 2. Install and configure the app
 
-On the machine that will run this (locally for now, or your Railway/Render
-service later):
+On the machine that will run this (locally for now, or Streamlit Community
+Cloud later — see section 4):
 
 ```bash
 cd streamlit_app
 python -m pip install -r requirements.txt
 ```
 
-Copy the secrets template and fill in the two URLs from step 1:
+Copy the secrets template and fill in the three URLs from step 1:
 
 ```bash
 cp .streamlit/secrets.toml.example .streamlit/secrets.toml
@@ -60,8 +62,9 @@ cp .streamlit/secrets.toml.example .streamlit/secrets.toml
 Edit `.streamlit/secrets.toml`:
 ```toml
 [sheet_endpoints]
-technical_url = "https://docs.google.com/spreadsheets/d/e/.../pub?output=csv"      # from step 1
-employability_url = "https://docs.google.com/spreadsheets/d/e/.../pub?output=csv"  # from step 1
+technical_url = "https://docs.google.com/spreadsheets/d/e/.../pub?output=csv"       # from step 1
+employability_url = "https://docs.google.com/spreadsheets/d/e/.../pub?output=csv"   # from step 1
+infrastructure_url = "https://docs.google.com/spreadsheets/d/e/.../pub?output=csv"  # from step 1
 ```
 
 `.gitignore` in this folder already excludes `secrets.toml` from git.
@@ -72,43 +75,50 @@ employability_url = "https://docs.google.com/spreadsheets/d/e/.../pub?output=csv
 streamlit run app.py
 ```
 
-This opens the app at `http://localhost:8501`. Try both tabs, the Centre and
-Mentor filters, and "Refresh data" to confirm it's actually pulling live
-values from the sheets.
+This opens the app at `http://localhost:8501`. Try all three tabs, the
+Centre/Mentor/Course filters, and "Refresh data" to confirm it's actually
+pulling live values from the sheets.
 
-## 4. Deploy to Railway
+## 4. Deploy to Streamlit Community Cloud
 
-Railway runs this as a normal persistent Python process (unlike Vercel,
-which can't run Streamlit — Streamlit needs a long-lived server with an
-open WebSocket connection, which serverless platforms don't support).
+Streamlit Community Cloud is free (no card required), built specifically to
+host Streamlit apps, and connects straight to a GitHub repo — no Procfile,
+no start command, no environment-variable juggling. It has a native secrets
+box that accepts TOML directly, which is the same format as your local
+`secrets.toml`, so this step is simpler than Railway would have been.
 
-Since Railway has no direct equivalent of a local `secrets.toml` file (and
-it shouldn't be committed to git anyway), `write_secrets.py` writes it from
-environment variables at container startup, and `Procfile` runs that before
-starting Streamlit — both are already in this folder, nothing more to write.
+(`Procfile` and `write_secrets.py` in this folder were built for Railway and
+aren't used by Streamlit Cloud — safe to ignore or delete, Streamlit Cloud
+just won't touch them.)
 
 **Steps:**
-1. Push this `streamlit_app` folder to a GitHub repo. `.gitignore` already
-   excludes `.streamlit/secrets.toml`, `venv/`, and `__pycache__/` — don't
-   remove that exclusion.
-2. In Railway (railway.app), **New Project → Deploy from GitHub repo** →
-   select the repo you just pushed.
-3. Railway auto-detects Python from `requirements.txt` and picks up the
-   start command from `Procfile` automatically — no manual start command
-   needed.
-4. In the service's **Variables** tab, add:
-   - `SHEET_URL_TECHNICAL` = the Technical sheet's Publish-to-web CSV URL
-   - `SHEET_URL_EMPLOYABILITY` = the Employability sheet's Publish-to-web CSV URL
-
-   (Same two URLs currently in your local `secrets.toml` — this is just
-   giving Railway the same information a different way.)
-5. Deploy. Railway gives you a public `https://<something>.up.railway.app`
-   URL once the build finishes — that's the link anyone can open, and it's
-   also the base for the per-centre links used by the weekly email reports
-   (e.g. `.../?centre=Delhi` opens the dashboard pre-filtered to Delhi).
-6. Every push to the connected branch auto-redeploys. If a sheet's URL ever
-   changes, update it in the Variables tab and redeploy (or just restart the
-   service) rather than editing any file.
+1. Push this `streamlit_app` folder to a GitHub repo (already done —
+   `jetking-feedback-dashboard` on your GitHub account). `.gitignore`
+   already excludes `.streamlit/secrets.toml`, `venv/`, and `__pycache__/` —
+   don't remove that exclusion.
+2. Go to **share.streamlit.io** and sign in with your GitHub account (the
+   same one the repo lives on).
+3. Click **New app**. Choose:
+   - **Repository:** `anshuman-ship-it/jetking-feedback-dashboard`
+   - **Branch:** `main`
+   - **Main file path:** `app.py`
+4. Before clicking Deploy, open **Advanced settings → Secrets** and paste
+   the same content as your local `.streamlit/secrets.toml`:
+   ```toml
+   [sheet_endpoints]
+   technical_url = "https://docs.google.com/spreadsheets/d/e/.../pub?output=csv"
+   employability_url = "https://docs.google.com/spreadsheets/d/e/.../pub?output=csv"
+   infrastructure_url = "https://docs.google.com/spreadsheets/d/e/.../pub?output=csv"
+   ```
+5. Click **Deploy**. First build takes a couple of minutes. You'll get a
+   public URL like `https://jetking-feedback-dashboard.streamlit.app` (exact
+   name depends on availability, editable in app settings) — that's the link
+   anyone can open, and it's also the base for the per-centre links used by
+   the weekly email reports (e.g. `.../?centre=Delhi` opens the dashboard
+   pre-filtered to Delhi).
+6. Every push to `main` auto-redeploys. If a sheet's URL ever changes,
+   update it under the app's **Settings → Secrets** in the Streamlit Cloud
+   dashboard and it'll pick it up on the next rerun — no redeploy needed.
 
 ## Notes
 
@@ -122,13 +132,22 @@ starting Streamlit — both are already in this folder, nothing more to write.
   usually handled at the network level (an internal-only URL, or a reverse
   proxy with basic auth) — let me know if you want that added once we
   deploy.
-- **If a question is added to either Google Form later:** the `TECH_Q` /
-  `EMP_Q` lists near the top of `app.py` will need a new entry for it, and
-  the category split (`cat1`/`cat2`) may need adjusting. Ask me and I'll
+- **If a question is added to any Google Form later:** the `TECH_Q` /
+  `EMP_Q` / `INFRA_Q` lists (and `INFRA_SPECIAL_Q` for Infrastructure's
+  Yes/No questions) near the top of `app.py` will need a new entry for it,
+  and the category split (`cat1`/`cat2`) may need adjusting. Ask me and I'll
   update it.
-- **If a sheet's column headers change** (this already happened once —
-  "Mentor Name" and "Batch Code" used to have longer two-line header text):
-  the `centre_col` / `mentor_col` / `course_col` / `batch_col` values passed
-  into `render_dashboard()` near the bottom of `app.py` need to match
-  exactly. If a breakdown or filter suddenly shows blank values, this is the
-  first thing to check.
+- **If a sheet's column headers change** (this has already happened twice —
+  once when "Mentor Name" and "Batch Code" lost their longer two-line header
+  text, and again when the Technical and Employability forms' mentor/batch
+  headers drifted and effectively swapped): the `centre_col` / `mentor_col` /
+  `course_col` / `batch_col` values passed into `render_dashboard()` (or
+  `centre_col`/`course_col`/`batch_col` into `render_infrastructure_dashboard()`)
+  near the bottom of `app.py` need to match exactly. If a breakdown or filter
+  suddenly shows blank values, this is the first thing to check — ask me to
+  re-read the live sheet's actual header row via the Google Drive connector
+  rather than guessing.
+- **The Centre Infrastructure sheet has a stray extra column** ("Column 15",
+  no header text) as of when it was created — likely a leftover from the
+  form being edited. Harmless: the app doesn't reference it, so it's ignored.
+  Worth deleting from the sheet if you want to tidy it up, but not urgent.

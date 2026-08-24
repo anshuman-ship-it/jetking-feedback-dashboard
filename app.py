@@ -1,11 +1,14 @@
 """
 Jetking Feedback Dashboards — Streamlit app
-Live-connects to the Technical and Employability Session Feedback Google Sheets
-via each sheet's "Publish to web" CSV link (no Google Cloud project, service
-account, or Apps Script needed) and renders the same breakdowns as the HTML
-preview dashboards: KPIs, trend over time, by Centre / Mentor / Course & Batch
-(split into the two question categories), and a weakest-to-strongest question
-ranking per category. Centre and Mentor filters combine.
+Live-connects to the Technical Session Feedback, Employability Session
+Feedback, and Centre Infrastructure Feedback Google Sheets via each sheet's
+"Publish to web" CSV link (no Google Cloud project, service account, or Apps
+Script needed). The Technical and Employability tabs render KPIs, trend over
+time, breakdowns by Centre / Mentor / Course & Batch (split into two question
+categories), and a weakest-to-strongest question ranking per category, with
+Centre and Mentor filters combining. The Infrastructure tab has no Mentor
+dimension (it's about facilities, not a person) — see
+render_infrastructure_dashboard() for how it differs.
 
 Setup: see SETUP_GUIDE.md in this folder.
 """
@@ -392,6 +395,68 @@ EMP_SPECIAL_Q = [
     },
 ]
 
+# Centre Infrastructure Feedback Form: a fundamentally different shape from
+# the other two — no Mentor dimension (it's about facilities, not a person),
+# and only 2 Likert questions total, one per "category" here (so cat1/cat2
+# each represent a single facility question rather than a multi-question
+# theme — the KPI/breakdown machinery doesn't care, it just averages whatever
+# is tagged cat1 vs cat2). Most of the real signal is in the 6 Yes/No /
+# Yes/No/Not Sure questions below, rendered via the same "Additional
+# questions" panel used for Employability's categorical questions.
+INFRA_Q = [
+    ("F1", "Rate the Drinking water facility available at the Center?", "Drinking water facility", "cat1"),
+    ("F2", "Rate the washroom facility available at the center?", "Washroom facility", "cat2"),
+]
+
+INFRA_COMMENT_COLS = [
+    ("Please provide suggestions for improvements (if any):", "Suggestions"),
+]
+
+INFRA_SPECIAL_Q = [
+    {
+        "code": "I1",
+        "column": "Does the center provide separate washroom facilities for male and female students?",
+        "short_label": "Separate washrooms (M/F)",
+        "options": ["No", "Yes"],
+        "colors": {"No": PALETTE["serious"], "Yes": "#0ca30c"},
+    },
+    {
+        "code": "I2",
+        "column": "Do you have access to a dedicated PC for doing practical's (1:1 student-to-PC ratio)?",
+        "short_label": "1:1 dedicated PC access",
+        "options": ["No", "Yes"],
+        "colors": {"No": PALETTE["serious"], "Yes": "#0ca30c"},
+    },
+    {
+        "code": "I3",
+        "column": "Are the necessary tools and components provided during the practical sessions?",
+        "short_label": "Tools/components provided",
+        "options": ["No", "Yes"],
+        "colors": {"No": PALETTE["serious"], "Yes": "#0ca30c"},
+    },
+    {
+        "code": "I4",
+        "column": "Are the PC's having the configuration Intel i5 Processor, 7th Generation, 16GB RAM & Storage of 1TB?",
+        "short_label": "PC spec: i5 7th gen / 16GB / 1TB",
+        "options": ["No", "Not Sure", "Yes"],
+        "colors": {"No": PALETTE["serious"], "Not Sure": PALETTE["muted"], "Yes": "#0ca30c"},
+    },
+    {
+        "code": "I5",
+        "column": "Is the lab equipped with the necessary infrastructure (e.g., chairs, tables, TV Monitor, and AC's)?",
+        "short_label": "Lab infra (chairs/tables/TV/AC)",
+        "options": ["No", "Yes"],
+        "colors": {"No": PALETTE["serious"], "Yes": "#0ca30c"},
+    },
+    {
+        "code": "I6",
+        "column": "Are the lab PCs equipped with the necessary operating system and required software?",
+        "short_label": "OS & required software",
+        "options": ["No", "Not Sure", "Yes"],
+        "colors": {"No": PALETTE["serious"], "Not Sure": PALETTE["muted"], "Yes": "#0ca30c"},
+    },
+]
+
 
 # ---------------------------------------------------------------------------
 # Data loading (live, cached)
@@ -442,6 +507,10 @@ def build_response_and_question_df(raw_df, centre_col, mentor_col, course_col, b
     scales, ...) whose raw answers carry through into response_df["special"] (a dict per
     response, keyed by the spec's "code") for the categorical % breakdown charts. These are
     never averaged into cat1/cat2/avg — they're on a different scale entirely.
+    mentor_col: pass None for a sheet with no mentor/faculty dimension at all (e.g. the
+    Infrastructure form, which is about facilities rather than a person) — every response's
+    "mentor" is then just "", and callers should skip mentor-specific UI (filter, breakdown,
+    heatmap) entirely rather than showing an always-blank one.
     """
     comment_cols = comment_cols or []
     special_cols = special_cols or []
@@ -460,7 +529,7 @@ def build_response_and_question_df(raw_df, centre_col, mentor_col, course_col, b
             continue
         ts = pd.to_datetime(r.get(ts_col), errors="coerce")
         centre = str(r.get(centre_col, "")).strip()
-        mentor = str(r.get(mentor_col, "")).strip()
+        mentor = str(r.get(mentor_col, "")).strip() if mentor_col else ""
         course = str(r.get(course_col, "")).strip()
         batch = str(r.get(batch_col, "")).strip()
         cat1_avg = sum(cat1_vals) / len(cat1_vals) if cat1_vals else None
@@ -562,12 +631,16 @@ def question_distribution(qdf, cat):
     return pct.reset_index().sort_values("weighted_avg", ascending=True)
 
 
-def build_action_items(filt_resp, filt_q, cat1_label, cat2_label, threshold=3.0):
+def build_action_items(filt_resp, filt_q, cat1_label, cat2_label, threshold=3.0, scopes=None):
     """Consolidated list of every mentor/centre/course/question currently below
     threshold, worst first, each tagged with its response count and which of
-    the two question categories it belongs to."""
+    the two question categories it belongs to.
+    scopes: optional list of (display label, key_col) pairs to break down by — defaults to
+    Centre/Mentor/Course. Pass a custom list for a sheet with no mentor dimension (e.g.
+    Infrastructure), omitting the Mentor/Faculty scope entirely."""
     items = []
-    for scope, key_col in [("Learning Centre", "centre"), ("Mentor/Faculty", "mentor"), ("Course", "course")]:
+    scopes = scopes if scopes is not None else [("Learning Centre", "centre"), ("Mentor/Faculty", "mentor"), ("Course", "course")]
+    for scope, key_col in scopes:
         g = group_avg(filt_resp, key_col)
         for _, row in g.iterrows():
             for cat_col, cat_lbl in [("cat1", cat1_label), ("cat2", cat2_label)]:
@@ -864,18 +937,24 @@ def categorical_question_chart(filt_resp, spec):
     st.plotly_chart(fig, width="stretch")
 
 
-def render_special_questions(filt_resp, specs):
-    """Renders one card per categorical (non-1-5) question, side by side.
+def render_special_questions(filt_resp, specs, cols_per_row=None):
+    """Renders one card per categorical (non-1-5) question, in rows of
+    `cols_per_row` columns (default: all in a single row, as before — fine
+    for a handful of questions like Employability's 3, but the Infrastructure
+    form has 6, which need to wrap into two rows to stay readable).
     A no-op when the sheet has none defined (e.g. Technical, currently)."""
     if not specs:
         return
     section_header("❓", "Additional questions")
-    cols = st.columns(len(specs))
-    for col, spec in zip(cols, specs):
-        with col:
-            with st.container(border=True):
-                st.markdown(f"**{spec['short_label']}**")
-                categorical_question_chart(filt_resp, spec)
+    cols_per_row = cols_per_row or len(specs)
+    for i in range(0, len(specs), cols_per_row):
+        row_specs = specs[i:i + cols_per_row]
+        cols = st.columns(len(row_specs))
+        for col, spec in zip(cols, row_specs):
+            with col:
+                with st.container(border=True):
+                    st.markdown(f"**{spec['short_label']}**")
+                    categorical_question_chart(filt_resp, spec)
 
 
 def render_action_items(items, cat1_label, cat2_label):
@@ -921,10 +1000,14 @@ def render_wrapped_table(df):
     )
 
 
-def render_comments_panel(filt_resp, key_prefix):
+def render_comments_panel(filt_resp, key_prefix, extra_cols=None):
+    """extra_cols: optional list of (display label, response_df key) pairs shown between
+    Date and Overall — defaults to Centre + Mentor. Pass a custom list for a sheet with no
+    mentor dimension (e.g. Infrastructure), e.g. [("Centre", "centre"), ("Course", "course")]."""
     has_comments = filt_resp["comments"].map(lambda d: len(d) > 0).any() if "comments" in filt_resp.columns else False
     if not has_comments:
         return
+    extra_cols = extra_cols if extra_cols is not None else [("Centre", "centre"), ("Mentor", "mentor")]
     section_header("💬", "Student comments")
     only_low = st.checkbox(
         "Only show responses needing attention (overall score below 3/5)",
@@ -937,7 +1020,10 @@ def render_comments_panel(filt_resp, key_prefix):
         return
     display_rows = []
     for _, r in rows.sort_values("date", ascending=False).iterrows():
-        row = {"Date": r["date"], "Centre": r["centre"], "Mentor": r["mentor"], "Overall": f"{r['avg']:.2f}"}
+        row = {"Date": r["date"]}
+        for label, key in extra_cols:
+            row[label] = r[key]
+        row["Overall"] = f"{r['avg']:.2f}"
         row.update(r["comments"])
         display_rows.append(row)
     # A plain HTML table instead of st.dataframe: st.dataframe truncates long
@@ -1096,6 +1182,124 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
     st.caption(f"Data refreshes automatically every {CACHE_TTL_SECONDS // 60} minutes, or click \"Refresh data\" above for an immediate pull.")
 
 
+def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label, qmap,
+                                     centre_col, course_col, batch_col, comment_cols=None, special_cols=None):
+    """Sibling to render_dashboard() for the Centre Infrastructure Feedback
+    Form. Kept as its own function rather than bolted onto render_dashboard()
+    because the shape is genuinely different: no Mentor/Faculty dimension at
+    all, only 2 Likert questions total, and most of the signal is Yes/No /
+    Yes/No/Not Sure questions. Concretely, versus render_dashboard() this
+    drops the Mentor filter, the "By Mentor" breakdown, the question-ranking
+    section (redundant when a category is a single question), and the
+    mentor x question heatmap — see dashboard-build-notes for the reasoning.
+    """
+    try:
+        raw_df, fetched_at = load_sheet(endpoint_key)
+    except KeyError:
+        st.info(
+            f"The {form_name} data endpoint isn't set up in secrets.toml yet "
+            f"(missing `sheet_endpoints.{endpoint_key}`). Add it once you've "
+            f"published that sheet to the web — see SETUP_GUIDE.md."
+        )
+        return
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+        st.error(
+            f"Couldn't reach the {form_name} data source after a few tries — this is usually "
+            "temporary (a slow response from Google, or a network hiccup)."
+        )
+        if st.button("Try again", key=f"{key_prefix}_retry"):
+            st.cache_data.clear()
+            st.rerun()
+        return
+    except Exception as e:
+        st.error(f"Couldn't load {form_name} data: {e}")
+        return
+    st.caption(f"📅 Data as of {fetched_at.strftime('%b %d, %Y, %I:%M %p')}")
+
+    response_df, question_df = build_response_and_question_df(
+        raw_df, centre_col, None, course_col, batch_col, qmap,
+        comment_cols=comment_cols, special_cols=special_cols
+    )
+
+    if response_df.empty:
+        st.info(f"No responses yet in the {form_name} sheet. This dashboard will populate automatically once students start submitting the form.")
+        return
+
+    # Filters — Centre + Course only; there's no Mentor/Faculty dimension on this form.
+    fcol1, fcol2, fcol3 = st.columns([2, 2, 1])
+    centres = sorted(response_df["centre"].dropna().unique().tolist())
+    with fcol1:
+        centre_options = ["All Learning Centres"] + centres
+        query_centre = st.query_params.get("centre")
+        default_centre_index = centre_options.index(query_centre) if query_centre in centre_options else 0
+        centre_sel = st.selectbox(
+            "Learning Centre", centre_options, index=default_centre_index, key=f"{key_prefix}_centre"
+        )
+    with fcol2:
+        courses = sorted(response_df["course"].dropna().unique().tolist())
+        course_sel = st.selectbox("Course", ["All Courses"] + courses, key=f"{key_prefix}_course")
+    with fcol3:
+        st.write("")
+        if st.button("Refresh data", key=f"{key_prefix}_refresh"):
+            st.cache_data.clear()
+            st.rerun()
+
+    filt_resp = response_df.copy()
+    filt_q = question_df.copy()
+    if centre_sel != "All Learning Centres":
+        filt_resp = filt_resp[filt_resp["centre"] == centre_sel]
+        filt_q = filt_q[filt_q["centre"] == centre_sel]
+    if course_sel != "All Courses":
+        filt_resp = filt_resp[filt_resp["course"] == course_sel]
+        filt_q = filt_q[filt_q["course"] == course_sel]
+
+    overall = filt_resp["avg"].mean() if not filt_resp.empty else None
+    cat1_avg = filt_resp["cat1"].mean() if not filt_resp.empty else None
+    cat2_avg = filt_resp["cat2"].mean() if not filt_resp.empty else None
+    kpi_row(overall, cat1_avg, cat2_avg, len(filt_resp), cat1_label, cat2_label)
+
+    render_action_items(
+        build_action_items(
+            filt_resp, filt_q, cat1_label, cat2_label,
+            scopes=[("Learning Centre", "centre"), ("Course", "course")],
+        ),
+        cat1_label, cat2_label,
+    )
+
+    section_header("📈", "Average score over time")
+    with st.container(border=True):
+        trend_chart(trend_by_date(filt_resp))
+
+    section_header("🧭", "Breakdowns")
+    b1, b2 = st.columns(2)
+    with b1:
+        with st.container(border=True):
+            st.markdown("**By Learning Centre**")
+            grouped_breakdown_chart(group_avg(filt_resp, "centre"), cat1_label, cat2_label)
+    with b2:
+        with st.container(border=True):
+            st.markdown("**By Course**")
+            grouped_breakdown_chart(group_avg(filt_resp, "course"), cat1_label, cat2_label)
+
+    section_header("📊", "Response spread per facility question")
+    st.caption("An average can hide a split opinion — this shows the actual mix of ratings, not just the mean.")
+    d1, d2 = st.columns(2)
+    with d1:
+        with st.container(border=True):
+            st.markdown(f"**{cat1_label}**")
+            distribution_chart(question_distribution(filt_q, "cat1"))
+    with d2:
+        with st.container(border=True):
+            st.markdown(f"**{cat2_label}**")
+            distribution_chart(question_distribution(filt_q, "cat2"))
+
+    render_special_questions(filt_resp, special_cols, cols_per_row=3)
+
+    render_comments_panel(filt_resp, key_prefix, extra_cols=[("Centre", "centre"), ("Course", "course")])
+
+    st.caption(f"Data refreshes automatically every {CACHE_TTL_SECONDS // 60} minutes, or click \"Refresh data\" above for an immediate pull.")
+
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -1105,13 +1309,15 @@ def main():
         """
         <div class="hero-banner">
             <h1>🎓 Jetking Feedback Dashboards</h1>
-            <p>Live from the Technical and Employability Session Feedback Google Sheets.</p>
+            <p>Live from the Technical, Employability, and Centre Infrastructure Feedback Google Sheets.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    tab1, tab2 = st.tabs(["Technical Session Feedback", "Employability Session Feedback"])
+    tab1, tab2, tab3 = st.tabs(
+        ["Technical Session Feedback", "Employability Session Feedback", "Centre Infrastructure Feedback"]
+    )
 
     with tab1:
         render_dashboard(
@@ -1143,6 +1349,21 @@ def main():
             batch_col="Batch Code",
             comment_cols=EMP_COMMENT_COLS,
             special_cols=EMP_SPECIAL_Q,
+        )
+
+    with tab3:
+        render_infrastructure_dashboard(
+            key_prefix="infra",
+            endpoint_key="infrastructure_url",
+            form_name="Centre Infrastructure Feedback",
+            cat1_label="Drinking Water Avg",
+            cat2_label="Washroom Facility Avg",
+            qmap=INFRA_Q,
+            centre_col="Jetking Learning Centre Name",
+            course_col="Course Name",
+            batch_col="Batch Code (eg. 2627-JU-1234)",
+            comment_cols=INFRA_COMMENT_COLS,
+            special_cols=INFRA_SPECIAL_Q,
         )
 
 

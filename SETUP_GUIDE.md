@@ -69,6 +69,39 @@ infrastructure_url = "https://docs.google.com/spreadsheets/d/e/.../pub?output=cs
 
 `.gitignore` in this folder already excludes `secrets.toml` from git.
 
+## 2a. Set up sign-in accounts (role-based access)
+
+The app requires sign-in — nobody sees any dashboard without an account.
+There are two kinds of account:
+
+- **Admins** (`roles = ["admin"]`) — see every centre, across all three tabs.
+- **Centre logins** (`roles = ["centre:Khar"]`, etc.) — see *only* that
+  centre's data. The Centre filter is replaced with a locked badge, the
+  "By Learning Centre" breakdown is hidden (it'd be a single bar), and the
+  comments table drops its Centre column, since everything on screen is
+  already that one centre.
+
+Add a `[credentials]` block to `.streamlit/secrets.toml` (see
+`.streamlit/secrets.toml.example` for the full annotated template) with one
+`[credentials.usernames."their.email@jetking.com"]` entry per person. The
+email address doubles as their login username — this is also the address
+the weekly PDF report will eventually be sent to, once that's built.
+
+To add someone or change a password, generate a bcrypt hash and paste it in:
+
+```bash
+python -c "import streamlit_authenticator as stauth; print(stauth.Hasher.hash('the-plaintext-password'))"
+```
+
+Never put a plain-text password in `secrets.toml` — only the `$2b$...` hash
+that command prints out.
+
+An account with no recognized role (missing `roles`, or a centre name that
+doesn't match one of `CENTRE_DISPLAY_NAMES` in `app.py`) signs in
+successfully but is stopped with a "no access role configured" message and
+sees no dashboard content — that's deliberate fail-closed behavior, not a
+bug, so a typo in a centre name can't accidentally grant broader access.
+
 ## 3. Run it locally
 
 ```bash
@@ -103,19 +136,14 @@ just won't touch them.)
    - **Branch:** `main`
    - **Main file path:** `app.py`
 4. Before clicking Deploy, open **Advanced settings → Secrets** and paste
-   the same content as your local `.streamlit/secrets.toml`:
-   ```toml
-   [sheet_endpoints]
-   technical_url = "https://docs.google.com/spreadsheets/d/e/.../pub?output=csv"
-   employability_url = "https://docs.google.com/spreadsheets/d/e/.../pub?output=csv"
-   infrastructure_url = "https://docs.google.com/spreadsheets/d/e/.../pub?output=csv"
-   ```
+   your **entire** local `.streamlit/secrets.toml` — both the
+   `[sheet_endpoints]` block and the `[credentials]` block from step 2a.
+   The deployed app reads secrets from here, not from any file in the repo.
 5. Click **Deploy**. First build takes a couple of minutes. You'll get a
    public URL like `https://jetking-feedback-dashboard.streamlit.app` (exact
    name depends on availability, editable in app settings) — that's the link
-   anyone can open, and it's also the base for the per-centre links used by
-   the weekly email reports (e.g. `.../?centre=Delhi` opens the dashboard
-   pre-filtered to Delhi).
+   everyone signs in at, and each person sees only what their account's role
+   allows.
 6. Every push to `main` auto-redeploys. If a sheet's URL ever changes,
    update it under the app's **Settings → Secrets** in the Streamlit Cloud
    dashboard and it'll pick it up on the next rerun — no redeploy needed.
@@ -125,13 +153,16 @@ just won't touch them.)
 - **Data freshness:** the app caches each sheet's data for 5 minutes so it
   doesn't refetch the CSV on every click. Anyone viewing can also click
   "Refresh data" for an immediate pull.
-- **Access control:** as set up here, anyone who can reach the deployed
-  app's URL can view the dashboard — there's no login screen, and (per the
-  privacy note above) the underlying data URLs themselves are also
-  unauthenticated. If you need to restrict who can see the app, that's
-  usually handled at the network level (an internal-only URL, or a reverse
-  proxy with basic auth) — let me know if you want that added once we
-  deploy.
+- **Access control:** the app itself now has a sign-in screen (see section
+  2a) — an admin login sees every centre, a centre login sees only its own
+  centre, and everyone else is turned away at the door. The one thing this
+  doesn't cover: the sheets' own "Publish to web" CSV URLs (per the privacy
+  note above) are still unauthenticated on their own, so someone who
+  obtained one of those long URLs directly could pull raw data without
+  going through the app's login. That's a much narrower exposure than "no
+  login at all," but if it needs closing further later, the two options
+  in that privacy note (Apps Script once the Workspace policy allows it, or
+  a Google Cloud service account) are still the way to do it.
 - **If a question is added to any Google Form later:** the `TECH_Q` /
   `EMP_Q` / `INFRA_Q` lists (and `INFRA_SPECIAL_Q` for Infrastructure's
   Yes/No questions) near the top of `app.py` will need a new entry for it,
@@ -151,3 +182,24 @@ just won't touch them.)
   no header text) as of when it was created — likely a leftover from the
   form being edited. Harmless: the app doesn't reference it, so it's ignored.
   Worth deleting from the sheet if you want to tidy it up, but not urgent.
+- **Adding/removing accounts later:** edit the `[credentials]` block in both
+  places it lives — your local `.streamlit/secrets.toml` and the Streamlit
+  Cloud app's Settings → Secrets — since they aren't automatically in sync.
+  Removing someone's `[credentials.usernames."..."]` entry entirely (rather
+  than leaving it with no `roles`) is the cleanest way to revoke access.
+- **Centre name spelling drift across sheets:** the three Google Forms don't
+  spell each centre's name identically ("Learning Center" vs "Training
+  Center", "Jetking X" vs "JK X New Learning Center", etc.) — this was
+  discovered while building the role-based logins, since a centre-locked
+  account filtering on an exact string would have silently missed some of
+  its own rows. `CENTRE_KEYWORDS` / `canonicalize_centre()` near the top of
+  `app.py` maps all known spelling variants of each centre onto one
+  canonical display name, and anything it doesn't recognize shows up
+  visibly as "Unrecognized centre (...)" in the data rather than being
+  dropped or miscounted. If a centre's name changes or a new centre is
+  added, this is the first place to update — ask me and I'll add it.
+- **Weekly PDF email reports:** planned but not yet built. The plan is a
+  real PDF per centre, emailed weekly to that centre's own login address
+  (the same ones in `[credentials]`) plus the admins — this is why those
+  logins are real work email addresses rather than throwaway usernames.
+  Not started yet; ask me when you're ready to scope it.

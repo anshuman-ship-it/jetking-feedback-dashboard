@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 IST = ZoneInfo("Asia/Kolkata")
 
 import streamlit as st
+import streamlit_authenticator as stauth
 import pandas as pd
 import requests
 import plotly.graph_objects as go
@@ -459,6 +460,65 @@ INFRA_SPECIAL_Q = [
 
 
 # ---------------------------------------------------------------------------
+# Centre name canonicalization
+# ---------------------------------------------------------------------------
+#
+# The "Jetking Learning Centre Name" field has already drifted across sheets
+# once (Technical says "...Learning Center", Employability says "...Training
+# Center" for the same physical Khar centre) — see dashboard-build-notes for
+# the full history. Rather than matching on the raw string (which a typo or a
+# form edit can silently break), every raw centre value is canonicalized to
+# one of the 6 known centres by keyword match, tolerant of "Learning" vs
+# "Training", "Jetking" vs "JK", spacing, etc. This also underpins role-based
+# access below: a centre login is locked to one of these 6 canonical keys.
+CENTRE_KEYWORDS = {
+    "Dadar": "dadar",
+    "Vashi": "vashi",
+    "Laxminagar": "laxmi",
+    "Maninagar": "manin",
+    "Bhawaniopore": "bhawani",
+    "Khar": "khar",
+}
+
+CENTRE_DISPLAY_NAMES = {
+    "Dadar": "Dadar Learning Centre",
+    "Vashi": "Vashi Learning Centre",
+    "Laxminagar": "Laxminagar Learning Centre",
+    "Maninagar": "Maninagar Learning Centre",
+    "Bhawaniopore": "Bhawaniopore Learning Centre",
+    "Khar": "Khar Learning Centre",
+}
+
+
+def canonicalize_centre(raw_value):
+    """Maps a raw centre string to one of the 6 known canonical centre keys
+    by keyword match (case-insensitive substring). Returns None if it
+    doesn't match any known centre — a new centre or a typo bad enough that
+    even the keyword didn't match; callers surface this rather than
+    silently dropping or misfiling the response."""
+    if not raw_value:
+        return None
+    v = str(raw_value).lower()
+    for canonical, keyword in CENTRE_KEYWORDS.items():
+        if keyword in v:
+            return canonical
+    return None
+
+
+def normalize_centre_display(raw_value):
+    """The display string stored as a response's "centre" field throughout
+    the app — the canonical "<Name> Learning Centre" for a recognized
+    centre, or a visibly-flagged "Unrecognized centre (...)" bucket so a new
+    or badly-misspelled centre shows up as something to investigate instead
+    of quietly becoming its own confusing dropdown entry."""
+    key = canonicalize_centre(raw_value)
+    if key:
+        return CENTRE_DISPLAY_NAMES[key]
+    raw = str(raw_value).strip()
+    return f"Unrecognized centre ({raw})" if raw else ""
+
+
+# ---------------------------------------------------------------------------
 # Data loading (live, cached)
 # ---------------------------------------------------------------------------
 #
@@ -528,7 +588,7 @@ def build_response_and_question_df(raw_df, centre_col, mentor_col, course_col, b
         if not row_q:
             continue
         ts = pd.to_datetime(r.get(ts_col), errors="coerce")
-        centre = str(r.get(centre_col, "")).strip()
+        centre = normalize_centre_display(r.get(centre_col, ""))
         mentor = str(r.get(mentor_col, "")).strip() if mentor_col else ""
         course = str(r.get(course_col, "")).strip()
         batch = str(r.get(batch_col, "")).strip()
@@ -1037,7 +1097,11 @@ def render_comments_panel(filt_resp, key_prefix, extra_cols=None):
 # ---------------------------------------------------------------------------
 
 def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label, qmap,
-                      centre_col, mentor_col, course_col, batch_col, comment_cols=None, special_cols=None):
+                      centre_col, mentor_col, course_col, batch_col, comment_cols=None, special_cols=None,
+                      centre_lock=None):
+    """centre_lock: canonical centre key (e.g. "Khar", from CENTRE_DISPLAY_NAMES) to
+    restrict this render to — set for a centre-role login. None (the default) shows
+    every centre and the Centre filter/breakdown, as for an admin."""
     try:
         raw_df, fetched_at = load_sheet(endpoint_key)
     except KeyError:
@@ -1070,21 +1134,35 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
         st.info(f"No responses yet in the {form_name} sheet. This dashboard will populate automatically once students start submitting the form.")
         return
 
+    if centre_lock:
+        locked_display_name = CENTRE_DISPLAY_NAMES[centre_lock]
+        response_df = response_df[response_df["centre"] == locked_display_name]
+        question_df = question_df[question_df["centre"] == locked_display_name]
+        if response_df.empty:
+            st.info(f"No responses yet for {locked_display_name} in the {form_name} sheet.")
+            return
+
     # Filters
     fcol1, fcol2, fcol3 = st.columns([2, 2, 1])
-    centres = sorted(response_df["centre"].dropna().unique().tolist())
-    with fcol1:
-        # A link like "...?centre=Delhi" pre-selects that centre — this is what
-        # lets the weekly per-centre email point each centre straight at its
-        # own filtered view instead of the all-centres dashboard. Only affects
-        # the widget's *initial* value: once a viewer picks a different centre
-        # themselves, their selection (tracked by `key`) takes over as usual.
-        centre_options = ["All Learning Centres"] + centres
-        query_centre = st.query_params.get("centre")
-        default_centre_index = centre_options.index(query_centre) if query_centre in centre_options else 0
-        centre_sel = st.selectbox(
-            "Learning Centre", centre_options, index=default_centre_index, key=f"{key_prefix}_centre"
-        )
+    if centre_lock:
+        centre_sel = CENTRE_DISPLAY_NAMES[centre_lock]
+        with fcol1:
+            st.markdown("**Learning Centre**")
+            st.markdown(f"🔒 {centre_sel}")
+    else:
+        centres = sorted(response_df["centre"].dropna().unique().tolist())
+        with fcol1:
+            # A link like "...?centre=Delhi" pre-selects that centre — this is what
+            # lets the weekly per-centre email point each centre straight at its
+            # own filtered view instead of the all-centres dashboard. Only affects
+            # the widget's *initial* value: once a viewer picks a different centre
+            # themselves, their selection (tracked by `key`) takes over as usual.
+            centre_options = ["All Learning Centres"] + centres
+            query_centre = st.query_params.get("centre")
+            default_centre_index = centre_options.index(query_centre) if query_centre in centre_options else 0
+            centre_sel = st.selectbox(
+                "Learning Centre", centre_options, index=default_centre_index, key=f"{key_prefix}_centre"
+            )
 
     mentor_options = ["All Mentors"]
     mentor_lookup = {}
@@ -1105,7 +1183,7 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
 
     filt_resp = response_df.copy()
     filt_q = question_df.copy()
-    if centre_sel != "All Learning Centres":
+    if not centre_lock and centre_sel != "All Learning Centres":
         filt_resp = filt_resp[filt_resp["centre"] == centre_sel]
         filt_q = filt_q[filt_q["centre"] == centre_sel]
     if mentor_sel:
@@ -1117,18 +1195,25 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
     cat2_avg = filt_resp["cat2"].mean() if not filt_resp.empty else None
     kpi_row(overall, cat1_avg, cat2_avg, len(filt_resp), cat1_label, cat2_label)
 
-    render_action_items(build_action_items(filt_resp, filt_q, cat1_label, cat2_label), cat1_label, cat2_label)
+    action_scopes = [("Mentor/Faculty", "mentor"), ("Course", "course")] if centre_lock else None
+    render_action_items(
+        build_action_items(filt_resp, filt_q, cat1_label, cat2_label, scopes=action_scopes),
+        cat1_label, cat2_label,
+    )
 
     section_header("📈", "Average score over time")
     with st.container(border=True):
         trend_chart(trend_by_date(filt_resp))
 
     section_header("🧭", "Breakdowns")
-    b1, b2, b3 = st.columns(3)
-    with b1:
-        with st.container(border=True):
-            st.markdown("**By Learning Centre**")
-            grouped_breakdown_chart(group_avg(filt_resp, "centre"), cat1_label, cat2_label)
+    if centre_lock:
+        b2, b3 = st.columns(2)
+    else:
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            with st.container(border=True):
+                st.markdown("**By Learning Centre**")
+                grouped_breakdown_chart(group_avg(filt_resp, "centre"), cat1_label, cat2_label)
     with b2:
         with st.container(border=True):
             st.markdown("**By Mentor / Faculty**")
@@ -1177,13 +1262,15 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
 
     render_special_questions(filt_resp, special_cols)
 
-    render_comments_panel(filt_resp, key_prefix)
+    comment_extra_cols = [("Mentor", "mentor")] if centre_lock else [("Centre", "centre"), ("Mentor", "mentor")]
+    render_comments_panel(filt_resp, key_prefix, extra_cols=comment_extra_cols)
 
     st.caption(f"Data refreshes automatically every {CACHE_TTL_SECONDS // 60} minutes, or click \"Refresh data\" above for an immediate pull.")
 
 
 def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label, qmap,
-                                     centre_col, course_col, batch_col, comment_cols=None, special_cols=None):
+                                     centre_col, course_col, batch_col, comment_cols=None, special_cols=None,
+                                     centre_lock=None):
     """Sibling to render_dashboard() for the Centre Infrastructure Feedback
     Form. Kept as its own function rather than bolted onto render_dashboard()
     because the shape is genuinely different: no Mentor/Faculty dimension at
@@ -1225,16 +1312,30 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
         st.info(f"No responses yet in the {form_name} sheet. This dashboard will populate automatically once students start submitting the form.")
         return
 
+    if centre_lock:
+        locked_display_name = CENTRE_DISPLAY_NAMES[centre_lock]
+        response_df = response_df[response_df["centre"] == locked_display_name]
+        question_df = question_df[question_df["centre"] == locked_display_name]
+        if response_df.empty:
+            st.info(f"No responses yet for {locked_display_name} in the {form_name} sheet.")
+            return
+
     # Filters — Centre + Course only; there's no Mentor/Faculty dimension on this form.
     fcol1, fcol2, fcol3 = st.columns([2, 2, 1])
-    centres = sorted(response_df["centre"].dropna().unique().tolist())
-    with fcol1:
-        centre_options = ["All Learning Centres"] + centres
-        query_centre = st.query_params.get("centre")
-        default_centre_index = centre_options.index(query_centre) if query_centre in centre_options else 0
-        centre_sel = st.selectbox(
-            "Learning Centre", centre_options, index=default_centre_index, key=f"{key_prefix}_centre"
-        )
+    if centre_lock:
+        centre_sel = CENTRE_DISPLAY_NAMES[centre_lock]
+        with fcol1:
+            st.markdown("**Learning Centre**")
+            st.markdown(f"🔒 {centre_sel}")
+    else:
+        centres = sorted(response_df["centre"].dropna().unique().tolist())
+        with fcol1:
+            centre_options = ["All Learning Centres"] + centres
+            query_centre = st.query_params.get("centre")
+            default_centre_index = centre_options.index(query_centre) if query_centre in centre_options else 0
+            centre_sel = st.selectbox(
+                "Learning Centre", centre_options, index=default_centre_index, key=f"{key_prefix}_centre"
+            )
     with fcol2:
         courses = sorted(response_df["course"].dropna().unique().tolist())
         course_sel = st.selectbox("Course", ["All Courses"] + courses, key=f"{key_prefix}_course")
@@ -1246,7 +1347,7 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
 
     filt_resp = response_df.copy()
     filt_q = question_df.copy()
-    if centre_sel != "All Learning Centres":
+    if not centre_lock and centre_sel != "All Learning Centres":
         filt_resp = filt_resp[filt_resp["centre"] == centre_sel]
         filt_q = filt_q[filt_q["centre"] == centre_sel]
     if course_sel != "All Courses":
@@ -1258,11 +1359,9 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
     cat2_avg = filt_resp["cat2"].mean() if not filt_resp.empty else None
     kpi_row(overall, cat1_avg, cat2_avg, len(filt_resp), cat1_label, cat2_label)
 
+    action_scopes = [("Course", "course")] if centre_lock else [("Learning Centre", "centre"), ("Course", "course")]
     render_action_items(
-        build_action_items(
-            filt_resp, filt_q, cat1_label, cat2_label,
-            scopes=[("Learning Centre", "centre"), ("Course", "course")],
-        ),
+        build_action_items(filt_resp, filt_q, cat1_label, cat2_label, scopes=action_scopes),
         cat1_label, cat2_label,
     )
 
@@ -1271,15 +1370,20 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
         trend_chart(trend_by_date(filt_resp))
 
     section_header("🧭", "Breakdowns")
-    b1, b2 = st.columns(2)
-    with b1:
-        with st.container(border=True):
-            st.markdown("**By Learning Centre**")
-            grouped_breakdown_chart(group_avg(filt_resp, "centre"), cat1_label, cat2_label)
-    with b2:
+    if centre_lock:
         with st.container(border=True):
             st.markdown("**By Course**")
             grouped_breakdown_chart(group_avg(filt_resp, "course"), cat1_label, cat2_label)
+    else:
+        b1, b2 = st.columns(2)
+        with b1:
+            with st.container(border=True):
+                st.markdown("**By Learning Centre**")
+                grouped_breakdown_chart(group_avg(filt_resp, "centre"), cat1_label, cat2_label)
+        with b2:
+            with st.container(border=True):
+                st.markdown("**By Course**")
+                grouped_breakdown_chart(group_avg(filt_resp, "course"), cat1_label, cat2_label)
 
     section_header("📊", "Response spread per facility question")
     st.caption("An average can hide a split opinion — this shows the actual mix of ratings, not just the mean.")
@@ -1295,9 +1399,59 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
 
     render_special_questions(filt_resp, special_cols, cols_per_row=3)
 
-    render_comments_panel(filt_resp, key_prefix, extra_cols=[("Centre", "centre"), ("Course", "course")])
+    infra_comment_cols = [("Course", "course")] if centre_lock else [("Centre", "centre"), ("Course", "course")]
+    render_comments_panel(filt_resp, key_prefix, extra_cols=infra_comment_cols)
 
     st.caption(f"Data refreshes automatically every {CACHE_TTL_SECONDS // 60} minutes, or click \"Refresh data\" above for an immediate pull.")
+
+
+# ---------------------------------------------------------------------------
+# Authentication & roles
+# ---------------------------------------------------------------------------
+#
+# Two kinds of login: a centre login locked to one of the 6 CENTRE_KEYWORDS
+# (a "centre:<Name>" role) and an admin login (an "admin" role, sees every
+# centre). Plain email + bcrypt-hashed-password auth via
+# streamlit-authenticator, with a signed cookie so a viewer stays signed in
+# across page reloads — chosen over Google Sign-In so Anshuman doesn't need
+# to stand up a Google Cloud OAuth project just for this. Credentials live in
+# secrets.toml under [credentials]; see SETUP_GUIDE.md for the exact schema
+# and how new accounts get their passwords hashed.
+
+def build_authenticator():
+    """Returns an Authenticate instance built from secrets, or None if
+    [credentials] isn't configured there yet."""
+    try:
+        creds_secrets = st.secrets["credentials"]
+    except KeyError:
+        return None
+    creds = dict(creds_secrets.to_dict())  # plain, mutable copy — st.secrets itself is read-only
+    return stauth.Authenticate(
+        credentials={"usernames": creds.get("usernames", {})},
+        cookie_name=creds.get("cookie_name", "jetking_feedback_auth"),
+        cookie_key=creds["cookie_key"],
+        cookie_expiry_days=creds.get("cookie_expiry_days", 30),
+        auto_hash=False,  # passwords in secrets.toml are already bcrypt-hashed — see SETUP_GUIDE.md
+    )
+
+
+def resolve_role(roles):
+    """roles: the list from st.session_state['roles'] for the signed-in user
+    (a per-user field in secrets.toml — see SETUP_GUIDE.md). Returns
+    (is_admin, centre_lock): centre_lock is a CENTRE_KEYWORDS key for a
+    centre login, or None for an admin. If both come back False/None, the
+    account has no recognized role configured — callers must treat that as
+    no access, not as admin access, so a typo'd role fails closed rather
+    than accidentally granting everything."""
+    roles = roles or []
+    if "admin" in roles:
+        return True, None
+    for r in roles:
+        if isinstance(r, str) and r.startswith("centre:"):
+            key = r.split(":", 1)[1]
+            if key in CENTRE_DISPLAY_NAMES:
+                return False, key
+    return False, None
 
 
 # ---------------------------------------------------------------------------
@@ -1314,6 +1468,44 @@ def main():
         """,
         unsafe_allow_html=True,
     )
+
+    authenticator = build_authenticator()
+    if authenticator is None:
+        st.error(
+            "Sign-in isn't configured yet (missing `[credentials]` in secrets.toml). "
+            "See SETUP_GUIDE.md."
+        )
+        st.stop()
+
+    authenticator.login(location="main", fields={"Form name": "Sign in", "Username": "Email", "Login": "Sign in"})
+    auth_status = st.session_state.get("authentication_status")
+
+    if auth_status is False:
+        st.error("That email or password isn't right.")
+        st.stop()
+    if auth_status is not True:
+        st.info("Sign in above to view the dashboards.")
+        st.stop()
+
+    is_admin, centre_lock = resolve_role(st.session_state.get("roles"))
+    if not is_admin and not centre_lock:
+        # Note: deliberately NOT calling authenticator.logout() here. That
+        # triggers a cookie-clearing rerun that flashes this message for
+        # under a second before resetting to a bare sign-in form, which
+        # reads as a bug rather than a denial. Leaving the session cookie in
+        # place is safe — this same role check re-runs on every page load,
+        # so a no-role account still can't reach any dashboard content; it
+        # just sees this message consistently until an admin fixes its role.
+        st.error("Your account is signed in but has no access role configured — contact Anshuman.")
+        authenticator.logout("Log out", location="main")
+        st.stop()
+
+    top_l, top_r = st.columns([5, 1])
+    with top_l:
+        who = CENTRE_DISPLAY_NAMES[centre_lock] if centre_lock else "Admin — all centres"
+        st.caption(f"Signed in as **{st.session_state.get('name')}** · {who}")
+    with top_r:
+        authenticator.logout("Log out", location="main")
 
     tab1, tab2, tab3 = st.tabs(
         ["Technical Session Feedback", "Employability Session Feedback", "Centre Infrastructure Feedback"]
@@ -1333,6 +1525,7 @@ def main():
             batch_col="Batch Code (eg. 2627-JU-1234)",
             comment_cols=TECH_COMMENT_COLS,
             special_cols=TECH_SPECIAL_Q,
+            centre_lock=centre_lock,
         )
 
     with tab2:
@@ -1349,6 +1542,7 @@ def main():
             batch_col="Batch Code",
             comment_cols=EMP_COMMENT_COLS,
             special_cols=EMP_SPECIAL_Q,
+            centre_lock=centre_lock,
         )
 
     with tab3:
@@ -1364,6 +1558,7 @@ def main():
             batch_col="Batch Code (eg. 2627-JU-1234)",
             comment_cols=INFRA_COMMENT_COLS,
             special_cols=INFRA_SPECIAL_Q,
+            centre_lock=centre_lock,
         )
 
 

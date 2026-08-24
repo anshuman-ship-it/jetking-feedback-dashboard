@@ -87,14 +87,24 @@ Add a `[credentials]` block to `.streamlit/secrets.toml` (see
 email address doubles as their login username — this is also the address
 the weekly PDF report will eventually be sent to, once that's built.
 
-To add someone or change a password, generate a bcrypt hash and paste it in:
+To add someone or change a password, run the helper script in this folder:
 
 ```bash
-python -c "import streamlit_authenticator as stauth; print(stauth.Hasher.hash('the-plaintext-password'))"
+python reset_password.py
 ```
 
+It'll ask for the person's email and new password, look up their existing
+name/role automatically if they're already in your local `secrets.toml` (so
+a password reset needs nothing else), and print the exact TOML block to
+paste into both your local `secrets.toml` and Streamlit Cloud's Settings →
+Secrets — see the block's own instructions for the two-place paste. It never
+writes to `secrets.toml` itself and never saves the plaintext password
+anywhere, so you still need to tell the person their new password directly
+(and never paste that plaintext anywhere that gets committed to git).
+
 Never put a plain-text password in `secrets.toml` — only the `$2b$...` hash
-that command prints out.
+`reset_password.py` prints out. (The one-liner it wraps, if you ever need it
+directly: `python -c "import streamlit_authenticator as stauth; print(stauth.Hasher.hash('the-plaintext-password'))"`.)
 
 An account with no recognized role (missing `roles`, or a centre name that
 doesn't match one of `CENTRE_DISPLAY_NAMES` in `app.py`) signs in

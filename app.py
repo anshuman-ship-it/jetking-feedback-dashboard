@@ -489,6 +489,11 @@ CENTRE_DISPLAY_NAMES = {
     "Khar": "Khar Learning Centre",
 }
 
+# Accounts allowed to download the current filtered view as raw sheet rows
+# (see render_raw_download_button()) — everyone else's view is unchanged.
+# Add an email here to extend this to someone else; no other code to touch.
+RAW_DOWNLOAD_EMAILS = {"dhruti@jetking.com"}
+
 
 def canonicalize_centre(raw_value):
     """Maps a raw centre string to one of the 6 known canonical centre keys
@@ -612,6 +617,10 @@ def build_response_and_question_df(raw_df, centre_col, mentor_col, course_col, b
             text = "" if pd.isna(val) else str(val).strip()
             special[spec["code"]] = text if text else None
         resp_rows.append({
+            "_raw_index": i,  # position in the raw sheet dataframe — lets a caller
+                              # (see allow_raw_download in render_dashboard()) map a
+                              # filtered response back to its original, unmodified row
+                              # for a "download the underlying sheet rows" export.
             "date": ts.date().isoformat() if pd.notna(ts) else None,
             "centre": centre, "mentor": mentor, "course": course, "batch": batch,
             "cat1": round(cat1_avg, 2) if cat1_avg is not None else None,
@@ -1092,16 +1101,43 @@ def render_comments_panel(filt_resp, key_prefix, extra_cols=None):
     render_wrapped_table(pd.DataFrame(display_rows))
 
 
+def render_raw_download_button(raw_df, filt_resp, key_prefix, form_name):
+    """Lets an authorized viewer download the ORIGINAL sheet rows (every
+    column exactly as submitted, no canonicalization/rounding/relabeling)
+    for whatever the current filters have narrowed the view down to.
+    filt_resp's "_raw_index" column (set in build_response_and_question_df)
+    maps each filtered response back to its row position in raw_df, so this
+    always mirrors the same set of responses currently on screen — never all
+    of raw_df, and never the app's cleaned-up version of the data.
+    Gated by an `allow_raw_download` flag per render call (see main()) —
+    currently only dhruti@jetking.com has this enabled."""
+    if filt_resp.empty:
+        return
+    raw_subset = raw_df.loc[filt_resp["_raw_index"]]
+    csv_bytes = raw_subset.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "⬇️ Download filtered data (raw sheet rows, CSV)",
+        data=csv_bytes,
+        file_name=f"{key_prefix}_filtered_raw.csv",
+        mime="text/csv",
+        key=f"{key_prefix}_download_raw",
+        help=f"Every original column from the {form_name} sheet, for exactly the "
+             f"{len(raw_subset)} response(s) matching your current filters above.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Dashboard renderer (shared by both sheets)
 # ---------------------------------------------------------------------------
 
 def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label, qmap,
                       centre_col, mentor_col, course_col, batch_col, comment_cols=None, special_cols=None,
-                      centre_lock=None):
+                      centre_lock=None, allow_raw_download=False):
     """centre_lock: canonical centre key (e.g. "Khar", from CENTRE_DISPLAY_NAMES) to
     restrict this render to — set for a centre-role login. None (the default) shows
-    every centre and the Centre filter/breakdown, as for an admin."""
+    every centre and the Centre filter/breakdown, as for an admin.
+    allow_raw_download: shows a button to download the current filtered view's
+    underlying raw sheet rows as CSV — see render_raw_download_button()."""
     try:
         raw_df, fetched_at = load_sheet(endpoint_key)
     except KeyError:
@@ -1190,6 +1226,9 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
         filt_resp = filt_resp[filt_resp["mentor"] == mentor_sel]
         filt_q = filt_q[filt_q["mentor"] == mentor_sel]
 
+    if allow_raw_download:
+        render_raw_download_button(raw_df, filt_resp, key_prefix, form_name)
+
     overall = filt_resp["avg"].mean() if not filt_resp.empty else None
     cat1_avg = filt_resp["cat1"].mean() if not filt_resp.empty else None
     cat2_avg = filt_resp["cat2"].mean() if not filt_resp.empty else None
@@ -1270,7 +1309,7 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
 
 def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label, qmap,
                                      centre_col, course_col, batch_col, comment_cols=None, special_cols=None,
-                                     centre_lock=None):
+                                     centre_lock=None, allow_raw_download=False):
     """Sibling to render_dashboard() for the Centre Infrastructure Feedback
     Form. Kept as its own function rather than bolted onto render_dashboard()
     because the shape is genuinely different: no Mentor/Faculty dimension at
@@ -1353,6 +1392,9 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
     if course_sel != "All Courses":
         filt_resp = filt_resp[filt_resp["course"] == course_sel]
         filt_q = filt_q[filt_q["course"] == course_sel]
+
+    if allow_raw_download:
+        render_raw_download_button(raw_df, filt_resp, key_prefix, form_name)
 
     overall = filt_resp["avg"].mean() if not filt_resp.empty else None
     cat1_avg = filt_resp["cat1"].mean() if not filt_resp.empty else None
@@ -1500,6 +1542,8 @@ def main():
         authenticator.logout("Log out", location="main")
         st.stop()
 
+    allow_raw_download = st.session_state.get("email") in RAW_DOWNLOAD_EMAILS
+
     top_l, top_r = st.columns([5, 1])
     with top_l:
         who = CENTRE_DISPLAY_NAMES[centre_lock] if centre_lock else "Admin — all centres"
@@ -1526,6 +1570,7 @@ def main():
             comment_cols=TECH_COMMENT_COLS,
             special_cols=TECH_SPECIAL_Q,
             centre_lock=centre_lock,
+            allow_raw_download=allow_raw_download,
         )
 
     with tab2:
@@ -1543,6 +1588,7 @@ def main():
             comment_cols=EMP_COMMENT_COLS,
             special_cols=EMP_SPECIAL_Q,
             centre_lock=centre_lock,
+            allow_raw_download=allow_raw_download,
         )
 
     with tab3:
@@ -1559,6 +1605,7 @@ def main():
             comment_cols=INFRA_COMMENT_COLS,
             special_cols=INFRA_SPECIAL_Q,
             centre_lock=centre_lock,
+            allow_raw_download=allow_raw_download,
         )
 
 

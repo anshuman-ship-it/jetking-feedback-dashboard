@@ -1095,10 +1095,20 @@ def render_comments_panel(filt_resp, key_prefix, extra_cols=None):
         row["Overall"] = f"{r['avg']:.2f}"
         row.update(r["comments"])
         display_rows.append(row)
+    display_df = pd.DataFrame(display_rows)
     # A plain HTML table instead of st.dataframe: st.dataframe truncates long
     # cells to a single line with no way to force wrapping, which was cutting
     # off free-text answers (Suggestions especially) instead of showing them.
-    render_wrapped_table(pd.DataFrame(display_rows))
+    render_wrapped_table(display_df)
+    st.download_button(
+        "⬇️ Download comments (CSV)",
+        data=display_df.to_csv(index=False).encode("utf-8"),
+        file_name=f"{key_prefix}_comments.csv",
+        mime="text/csv",
+        key=f"{key_prefix}_comments_download",
+        help="Exactly the comments shown in the table above — same filters and "
+             "the 'needing attention' checkbox, if you've ticked it.",
+    )
 
 
 def render_raw_download_button(raw_df, filt_resp, key_prefix, form_name):
@@ -1123,6 +1133,39 @@ def render_raw_download_button(raw_df, filt_resp, key_prefix, form_name):
         key=f"{key_prefix}_download_raw",
         help=f"Every original column from the {form_name} sheet, for exactly the "
              f"{len(raw_subset)} response(s) matching your current filters above.",
+    )
+
+
+def render_centre_filter(key_prefix, centre_options):
+    """Learning Centre selectbox for a non-centre-locked view (admin), kept in
+    sync across all three tabs: picking a centre in any one tab's dropdown
+    updates the others too, via a shared `global_centre_sel` session_state
+    slot written by every tab's on_change callback. Since Streamlit renders
+    all three tab panels every run regardless of which is visually active,
+    a change in one tab's widget updates global_centre_sel in time for the
+    other two tabs (rendered right after it in main()) to pick it up the
+    same run — no extra rerun needed.
+    Falls back gracefully if the shared centre isn't present in this tab's
+    own data (e.g. Infrastructure has fewer responses than Technical) — that
+    tab just keeps showing whatever it already had rather than erroring.
+    A "?centre=Delhi"-style query param (used by the weekly per-centre email
+    links) still seeds the very first render, same as before this existed."""
+    state_key = f"{key_prefix}_centre"
+    shared = st.session_state.get("global_centre_sel")
+    if state_key not in st.session_state:
+        query_centre = st.query_params.get("centre")
+        if shared in centre_options:
+            st.session_state[state_key] = shared
+        elif query_centre in centre_options:
+            st.session_state[state_key] = query_centre
+    elif shared in centre_options and st.session_state[state_key] != shared:
+        st.session_state[state_key] = shared
+
+    def _propagate_centre_selection():
+        st.session_state["global_centre_sel"] = st.session_state[state_key]
+
+    return st.selectbox(
+        "Learning Centre", centre_options, key=state_key, on_change=_propagate_centre_selection
     )
 
 
@@ -1188,27 +1231,36 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
     else:
         centres = sorted(response_df["centre"].dropna().unique().tolist())
         with fcol1:
-            # A link like "...?centre=Delhi" pre-selects that centre — this is what
-            # lets the weekly per-centre email point each centre straight at its
-            # own filtered view instead of the all-centres dashboard. Only affects
-            # the widget's *initial* value: once a viewer picks a different centre
-            # themselves, their selection (tracked by `key`) takes over as usual.
             centre_options = ["All Learning Centres"] + centres
-            query_centre = st.query_params.get("centre")
-            default_centre_index = centre_options.index(query_centre) if query_centre in centre_options else 0
-            centre_sel = st.selectbox(
-                "Learning Centre", centre_options, index=default_centre_index, key=f"{key_prefix}_centre"
-            )
+            centre_sel = render_centre_filter(key_prefix, centre_options)
 
+    # Scope which mentors appear to the currently selected centre, so picking
+    # a centre narrows this dropdown too instead of always listing every
+    # mentor across every centre. Centre-locked logins never reach this
+    # branch's "All Learning Centres" case at all (response_df is already
+    # limited to their one centre), so only the admin view needed this fix.
+    mentor_source_df = response_df
+    if not centre_lock and centre_sel != "All Learning Centres":
+        mentor_source_df = response_df[response_df["centre"] == centre_sel]
     mentor_options = ["All Mentors"]
     mentor_lookup = {}
-    for m in sorted(response_df["mentor"].dropna().unique().tolist()):
+    for m in sorted(mentor_source_df["mentor"].dropna().unique().tolist()):
+        # Still computed against the full (unscoped) response_df, not
+        # mentor_source_df — so a mentor who also teaches at another centre
+        # keeps showing that in the label even once a centre filter has
+        # narrowed down which mentors are listed at all.
         centres_for_m = sorted(response_df.loc[response_df["mentor"] == m, "centre"].dropna().unique().tolist())
         label = f"{m} — {', '.join(centres_for_m)}" if centres_for_m else m
         mentor_options.append(label)
         mentor_lookup[label] = m
+    mentor_key = f"{key_prefix}_mentor"
+    if mentor_key in st.session_state and st.session_state[mentor_key] not in mentor_options:
+        # The previously selected mentor isn't in this narrower centre's
+        # list anymore — fall back to "All Mentors" rather than letting
+        # Streamlit raise on a selection that's no longer a valid option.
+        st.session_state[mentor_key] = "All Mentors"
     with fcol2:
-        mentor_sel_label = st.selectbox("Mentor / Faculty", mentor_options, key=f"{key_prefix}_mentor")
+        mentor_sel_label = st.selectbox("Mentor / Faculty", mentor_options, key=mentor_key)
     mentor_sel = mentor_lookup.get(mentor_sel_label)
 
     with fcol3:
@@ -1370,11 +1422,7 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
         centres = sorted(response_df["centre"].dropna().unique().tolist())
         with fcol1:
             centre_options = ["All Learning Centres"] + centres
-            query_centre = st.query_params.get("centre")
-            default_centre_index = centre_options.index(query_centre) if query_centre in centre_options else 0
-            centre_sel = st.selectbox(
-                "Learning Centre", centre_options, index=default_centre_index, key=f"{key_prefix}_centre"
-            )
+            centre_sel = render_centre_filter(key_prefix, centre_options)
     with fcol2:
         courses = sorted(response_df["course"].dropna().unique().tolist())
         course_sel = st.selectbox("Course", ["All Courses"] + courses, key=f"{key_prefix}_course")

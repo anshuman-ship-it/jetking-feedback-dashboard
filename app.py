@@ -1238,7 +1238,6 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
             st.markdown(f"🔒 {centre_sel}")
     elif centre_lock:
         with fcol1:
-            st.caption(f"🔒 Access limited to: {', '.join(locked_display_names)}")
             centre_options = ["All My Centres"] + locked_display_names
             centre_sel = render_centre_filter(key_prefix, centre_options)
     else:
@@ -1435,7 +1434,6 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
             st.markdown(f"🔒 {centre_sel}")
     elif centre_lock:
         with fcol1:
-            st.caption(f"🔒 Access limited to: {', '.join(locked_display_names)}")
             centre_options = ["All My Centres"] + locked_display_names
             centre_sel = render_centre_filter(key_prefix, centre_options)
     else:

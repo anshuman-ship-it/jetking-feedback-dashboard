@@ -1175,7 +1175,7 @@ def render_centre_filter(key_prefix, centre_options):
 
 def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label, qmap,
                       centre_col, mentor_col, course_col, batch_col, comment_cols=None, special_cols=None,
-                      centre_lock=None, allow_raw_download=False):
+                      centre_lock=None, mentor_lock=None, allow_raw_download=False):
     """centre_lock: a list of one or more canonical centre keys (e.g.
     ["Khar"], from CENTRE_DISPLAY_NAMES) to restrict this render to — set
     for a centre-role login. A single-entry list locks to exactly one
@@ -1186,6 +1186,13 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
     otherwise behaves like the admin view (dropdown, breakdown chart,
     Centre column in comments — just scoped down to fewer centres). None
     (the default) shows every centre, as for an admin.
+    mentor_lock: an exact mentor-name string (see resolve_role()) to further
+    restrict this render to just that one mentor's own responses within
+    whatever centre_lock already narrowed it to — a trainer-level login.
+    Static 🔒 label instead of the Mentor/Faculty dropdown, no "By Mentor"
+    breakdown or Mentor-scoped action items (both trivial with one mentor),
+    no Mentor/Centre columns in the comments panel. None (the default)
+    behaves exactly as before this existed.
     allow_raw_download: shows a button to download the current filtered view's
     underlying raw sheet rows as CSV — see render_raw_download_button()."""
     try:
@@ -1229,6 +1236,15 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
             st.info(f"No responses yet for {', '.join(locked_display_names)} in the {form_name} sheet.")
             return
 
+    mentor_locked = bool(mentor_lock)
+    if mentor_locked:
+        _mkey = mentor_lock.strip().casefold()
+        response_df = response_df[response_df["mentor"].str.strip().str.casefold() == _mkey]
+        question_df = question_df[question_df["mentor"].str.strip().str.casefold() == _mkey]
+        if response_df.empty:
+            st.info(f"No responses yet for {mentor_lock} in the {form_name} sheet.")
+            return
+
     # Filters
     fcol1, fcol2, fcol3 = st.columns([2, 2, 1])
     if single_lock:
@@ -1246,35 +1262,41 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
             centre_options = ["All Learning Centres"] + centres
             centre_sel = render_centre_filter(key_prefix, centre_options)
 
-    # Scope which mentors appear to the currently selected centre, so picking
-    # a centre narrows this dropdown too instead of always listing every
-    # mentor across every centre. A single-centre-locked login never reaches
-    # this branch's "all centres" case at all (response_df is already
-    # limited to their one centre), so only the admin/multi-centre view
-    # needed this fix.
-    mentor_source_df = response_df
-    if not single_lock and centre_sel not in ("All Learning Centres", "All My Centres"):
-        mentor_source_df = response_df[response_df["centre"] == centre_sel]
-    mentor_options = ["All Mentors"]
-    mentor_lookup = {}
-    for m in sorted(mentor_source_df["mentor"].dropna().unique().tolist()):
-        # Still computed against the full (unscoped) response_df, not
-        # mentor_source_df — so a mentor who also teaches at another centre
-        # keeps showing that in the label even once a centre filter has
-        # narrowed down which mentors are listed at all.
-        centres_for_m = sorted(response_df.loc[response_df["mentor"] == m, "centre"].dropna().unique().tolist())
-        label = f"{m} — {', '.join(centres_for_m)}" if centres_for_m else m
-        mentor_options.append(label)
-        mentor_lookup[label] = m
-    mentor_key = f"{key_prefix}_mentor"
-    if mentor_key in st.session_state and st.session_state[mentor_key] not in mentor_options:
-        # The previously selected mentor isn't in this narrower centre's
-        # list anymore — fall back to "All Mentors" rather than letting
-        # Streamlit raise on a selection that's no longer a valid option.
-        st.session_state[mentor_key] = "All Mentors"
-    with fcol2:
-        mentor_sel_label = st.selectbox("Mentor / Faculty", mentor_options, key=mentor_key)
-    mentor_sel = mentor_lookup.get(mentor_sel_label)
+    if mentor_locked:
+        with fcol2:
+            st.markdown("**Mentor / Faculty**")
+            st.markdown(f"🔒 {mentor_lock}")
+        mentor_sel = mentor_lock
+    else:
+        # Scope which mentors appear to the currently selected centre, so picking
+        # a centre narrows this dropdown too instead of always listing every
+        # mentor across every centre. A single-centre-locked login never reaches
+        # this branch's "all centres" case at all (response_df is already
+        # limited to their one centre), so only the admin/multi-centre view
+        # needed this fix.
+        mentor_source_df = response_df
+        if not single_lock and centre_sel not in ("All Learning Centres", "All My Centres"):
+            mentor_source_df = response_df[response_df["centre"] == centre_sel]
+        mentor_options = ["All Mentors"]
+        mentor_lookup = {}
+        for m in sorted(mentor_source_df["mentor"].dropna().unique().tolist()):
+            # Still computed against the full (unscoped) response_df, not
+            # mentor_source_df — so a mentor who also teaches at another centre
+            # keeps showing that in the label even once a centre filter has
+            # narrowed down which mentors are listed at all.
+            centres_for_m = sorted(response_df.loc[response_df["mentor"] == m, "centre"].dropna().unique().tolist())
+            label = f"{m} — {', '.join(centres_for_m)}" if centres_for_m else m
+            mentor_options.append(label)
+            mentor_lookup[label] = m
+        mentor_key = f"{key_prefix}_mentor"
+        if mentor_key in st.session_state and st.session_state[mentor_key] not in mentor_options:
+            # The previously selected mentor isn't in this narrower centre's
+            # list anymore — fall back to "All Mentors" rather than letting
+            # Streamlit raise on a selection that's no longer a valid option.
+            st.session_state[mentor_key] = "All Mentors"
+        with fcol2:
+            mentor_sel_label = st.selectbox("Mentor / Faculty", mentor_options, key=mentor_key)
+        mentor_sel = mentor_lookup.get(mentor_sel_label)
 
     with fcol3:
         st.write("")
@@ -1299,7 +1321,12 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
     cat2_avg = filt_resp["cat2"].mean() if not filt_resp.empty else None
     kpi_row(overall, cat1_avg, cat2_avg, len(filt_resp), cat1_label, cat2_label)
 
-    action_scopes = [("Mentor/Faculty", "mentor"), ("Course", "course")] if single_lock else None
+    if mentor_locked:
+        action_scopes = [("Course", "course")]
+    elif single_lock:
+        action_scopes = [("Mentor/Faculty", "mentor"), ("Course", "course")]
+    else:
+        action_scopes = None
     render_action_items(
         build_action_items(filt_resp, filt_q, cat1_label, cat2_label, scopes=action_scopes),
         cat1_label, cat2_label,
@@ -1310,22 +1337,29 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
         trend_chart(trend_by_date(filt_resp))
 
     section_header("🧭", "Breakdowns")
-    if single_lock:
-        b2, b3 = st.columns(2)
-    else:
-        b1, b2, b3 = st.columns(3)
-        with b1:
-            with st.container(border=True):
-                st.markdown("**By Learning Centre**")
-                grouped_breakdown_chart(group_avg(filt_resp, "centre"), cat1_label, cat2_label)
-    with b2:
-        with st.container(border=True):
-            st.markdown("**By Mentor / Faculty**")
-            grouped_breakdown_chart(group_avg(filt_resp, "mentor"), cat1_label, cat2_label)
-    with b3:
+    if mentor_locked:
+        # Only one mentor in scope — a "By Mentor" bar would be a single
+        # trivial bar, so Course is the only breakdown left worth showing.
         with st.container(border=True):
             st.markdown("**By Course**")
             grouped_breakdown_chart(group_avg(filt_resp, "course"), cat1_label, cat2_label)
+    else:
+        if single_lock:
+            b2, b3 = st.columns(2)
+        else:
+            b1, b2, b3 = st.columns(3)
+            with b1:
+                with st.container(border=True):
+                    st.markdown("**By Learning Centre**")
+                    grouped_breakdown_chart(group_avg(filt_resp, "centre"), cat1_label, cat2_label)
+        with b2:
+            with st.container(border=True):
+                st.markdown("**By Mentor / Faculty**")
+                grouped_breakdown_chart(group_avg(filt_resp, "mentor"), cat1_label, cat2_label)
+        with b3:
+            with st.container(border=True):
+                st.markdown("**By Course**")
+                grouped_breakdown_chart(group_avg(filt_resp, "course"), cat1_label, cat2_label)
 
     section_header("🎯", "Question breakdown, weakest to strongest")
     q1, q2 = st.columns(2)
@@ -1366,7 +1400,12 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
 
     render_special_questions(filt_resp, special_cols)
 
-    comment_extra_cols = [("Mentor", "mentor")] if single_lock else [("Centre", "centre"), ("Mentor", "mentor")]
+    if mentor_locked:
+        comment_extra_cols = []  # only one mentor, one centre in scope — both columns would be constant
+    elif single_lock:
+        comment_extra_cols = [("Mentor", "mentor")]
+    else:
+        comment_extra_cols = [("Centre", "centre"), ("Mentor", "mentor")]
     render_comments_panel(filt_resp, key_prefix, extra_cols=comment_extra_cols)
 
     st.caption(f"Data refreshes automatically every {CACHE_TTL_SECONDS // 60} minutes, or click \"Refresh data\" above for an immediate pull.")
@@ -1546,8 +1585,8 @@ def build_authenticator():
 def resolve_role(roles):
     """roles: the list from st.session_state['roles'] for the signed-in user
     (a per-user field in secrets.toml — see SETUP_GUIDE.md). Returns
-    (is_admin, centre_lock): centre_lock is a list of one or more
-    CENTRE_KEYWORDS keys for a centre-restricted login, or None for an
+    (is_admin, centre_lock, mentor_lock): centre_lock is a list of one or
+    more CENTRE_KEYWORDS keys for a centre-restricted login, or None for an
     admin. A single-centre login is the normal case:
     roles = ["centre:Khar"]. A multi-centre login (sees only that specific
     subset, not every centre) lists more than one name comma-separated in
@@ -1558,20 +1597,50 @@ def resolve_role(roles):
     no access, not as admin access, so a typo'd role fails closed rather
     than accidentally granting everything. An unrecognized centre name
     mixed in with valid ones is silently dropped rather than denying the
-    whole role, so one typo only narrows access instead of removing it."""
+    whole role, so one typo only narrows access instead of removing it.
+
+    mentor_lock: a mentor-name string (exactly as it appears in that
+    sheet's mentor column, e.g. the Google Form's mentor dropdown), or
+    None. Set via a "mentor:<Centre>:<Mentor Name>" role, e.g.
+    roles = ["mentor:Vashi:Pradnya Shelar"] — this locks the login to
+    exactly that one centre (added into centre_lock, same as a "centre:"
+    role would) AND to exactly that one mentor's own data within it. This
+    is a trainer-level login: they see only their own numbers, not the
+    rest of their centre's mentors. Intended to be paired with exactly one
+    centre; the mentor name must match the sheet's mentor column exactly
+    (case/whitespace-insensitive) or that trainer's dashboard will show
+    "no responses yet" even though data exists under a slightly different
+    spelling — double-check against the live sheet before shipping a new
+    mentor-locked account, not just the staff directory (names can drift
+    between the two)."""
     roles = roles or []
     if "admin" in roles:
-        return True, None
+        return True, None, None
     locked = []
+    mentor_lock = None
     for r in roles:
-        if isinstance(r, str) and r.startswith("centre:"):
+        if not isinstance(r, str):
+            continue
+        if r.startswith("centre:"):
             for key in r.split(":", 1)[1].split(","):
                 key = key.strip()
                 if key in CENTRE_DISPLAY_NAMES and key not in locked:
                     locked.append(key)
+        elif r.startswith("mentor:"):
+            # "mentor:<Centre>:<Mentor Name>" — split on ":" at most twice
+            # so a mentor name containing ":" (unlikely, but not worth
+            # crashing over) doesn't break the parse.
+            parts = r.split(":", 2)
+            if len(parts) == 3:
+                _, centre_key, name = parts
+                centre_key, name = centre_key.strip(), name.strip()
+                if centre_key in CENTRE_DISPLAY_NAMES and name:
+                    if centre_key not in locked:
+                        locked.append(centre_key)
+                    mentor_lock = name
     if locked:
-        return False, locked
-    return False, None
+        return False, locked, mentor_lock
+    return False, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -1607,7 +1676,7 @@ def main():
         st.info("Sign in above to view the dashboards.")
         st.stop()
 
-    is_admin, centre_lock = resolve_role(st.session_state.get("roles"))
+    is_admin, centre_lock, mentor_lock = resolve_role(st.session_state.get("roles"))
     if not is_admin and not centre_lock:
         # Note: deliberately NOT calling authenticator.logout() here. That
         # triggers a cookie-clearing rerun that flashes this message for
@@ -1624,7 +1693,12 @@ def main():
 
     top_l, top_r = st.columns([5, 1])
     with top_l:
-        who = ", ".join(CENTRE_DISPLAY_NAMES[c] for c in centre_lock) if centre_lock else "Admin — all centres"
+        if centre_lock and mentor_lock:
+            who = f"{', '.join(CENTRE_DISPLAY_NAMES[c] for c in centre_lock)} — {mentor_lock}"
+        elif centre_lock:
+            who = ", ".join(CENTRE_DISPLAY_NAMES[c] for c in centre_lock)
+        else:
+            who = "Admin — all centres"
         st.caption(f"Signed in as **{st.session_state.get('name')}** · {who}")
     with top_r:
         authenticator.logout("Log out", location="main")
@@ -1648,6 +1722,7 @@ def main():
             comment_cols=TECH_COMMENT_COLS,
             special_cols=TECH_SPECIAL_Q,
             centre_lock=centre_lock,
+            mentor_lock=mentor_lock,
             allow_raw_download=allow_raw_download,
         )
 
@@ -1666,6 +1741,7 @@ def main():
             comment_cols=EMP_COMMENT_COLS,
             special_cols=EMP_SPECIAL_Q,
             centre_lock=centre_lock,
+            mentor_lock=mentor_lock,
             allow_raw_download=allow_raw_download,
         )
 

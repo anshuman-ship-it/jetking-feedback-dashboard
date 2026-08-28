@@ -1176,9 +1176,16 @@ def render_centre_filter(key_prefix, centre_options):
 def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label, qmap,
                       centre_col, mentor_col, course_col, batch_col, comment_cols=None, special_cols=None,
                       centre_lock=None, allow_raw_download=False):
-    """centre_lock: canonical centre key (e.g. "Khar", from CENTRE_DISPLAY_NAMES) to
-    restrict this render to — set for a centre-role login. None (the default) shows
-    every centre and the Centre filter/breakdown, as for an admin.
+    """centre_lock: a list of one or more canonical centre keys (e.g.
+    ["Khar"], from CENTRE_DISPLAY_NAMES) to restrict this render to — set
+    for a centre-role login. A single-entry list locks to exactly one
+    centre (the original centre-manager-style login: a static 🔒 label, no
+    Centre filter dropdown, no "By Learning Centre" breakdown — both would
+    be redundant with only one centre in scope). More than one entry
+    restricts the Centre filter's options to just that subset instead, but
+    otherwise behaves like the admin view (dropdown, breakdown chart,
+    Centre column in comments — just scoped down to fewer centres). None
+    (the default) shows every centre, as for an admin.
     allow_raw_download: shows a button to download the current filtered view's
     underlying raw sheet rows as CSV — see render_raw_download_button()."""
     try:
@@ -1213,21 +1220,27 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
         st.info(f"No responses yet in the {form_name} sheet. This dashboard will populate automatically once students start submitting the form.")
         return
 
+    single_lock = bool(centre_lock) and len(centre_lock) == 1
     if centre_lock:
-        locked_display_name = CENTRE_DISPLAY_NAMES[centre_lock]
-        response_df = response_df[response_df["centre"] == locked_display_name]
-        question_df = question_df[question_df["centre"] == locked_display_name]
+        locked_display_names = [CENTRE_DISPLAY_NAMES[c] for c in centre_lock]
+        response_df = response_df[response_df["centre"].isin(locked_display_names)]
+        question_df = question_df[question_df["centre"].isin(locked_display_names)]
         if response_df.empty:
-            st.info(f"No responses yet for {locked_display_name} in the {form_name} sheet.")
+            st.info(f"No responses yet for {', '.join(locked_display_names)} in the {form_name} sheet.")
             return
 
     # Filters
     fcol1, fcol2, fcol3 = st.columns([2, 2, 1])
-    if centre_lock:
-        centre_sel = CENTRE_DISPLAY_NAMES[centre_lock]
+    if single_lock:
+        centre_sel = locked_display_names[0]
         with fcol1:
             st.markdown("**Learning Centre**")
             st.markdown(f"🔒 {centre_sel}")
+    elif centre_lock:
+        with fcol1:
+            st.caption(f"🔒 Access limited to: {', '.join(locked_display_names)}")
+            centre_options = ["All My Centres"] + locked_display_names
+            centre_sel = render_centre_filter(key_prefix, centre_options)
     else:
         centres = sorted(response_df["centre"].dropna().unique().tolist())
         with fcol1:
@@ -1236,11 +1249,12 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
 
     # Scope which mentors appear to the currently selected centre, so picking
     # a centre narrows this dropdown too instead of always listing every
-    # mentor across every centre. Centre-locked logins never reach this
-    # branch's "All Learning Centres" case at all (response_df is already
-    # limited to their one centre), so only the admin view needed this fix.
+    # mentor across every centre. A single-centre-locked login never reaches
+    # this branch's "all centres" case at all (response_df is already
+    # limited to their one centre), so only the admin/multi-centre view
+    # needed this fix.
     mentor_source_df = response_df
-    if not centre_lock and centre_sel != "All Learning Centres":
+    if not single_lock and centre_sel not in ("All Learning Centres", "All My Centres"):
         mentor_source_df = response_df[response_df["centre"] == centre_sel]
     mentor_options = ["All Mentors"]
     mentor_lookup = {}
@@ -1271,7 +1285,7 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
 
     filt_resp = response_df.copy()
     filt_q = question_df.copy()
-    if not centre_lock and centre_sel != "All Learning Centres":
+    if not single_lock and centre_sel not in ("All Learning Centres", "All My Centres"):
         filt_resp = filt_resp[filt_resp["centre"] == centre_sel]
         filt_q = filt_q[filt_q["centre"] == centre_sel]
     if mentor_sel:
@@ -1286,7 +1300,7 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
     cat2_avg = filt_resp["cat2"].mean() if not filt_resp.empty else None
     kpi_row(overall, cat1_avg, cat2_avg, len(filt_resp), cat1_label, cat2_label)
 
-    action_scopes = [("Mentor/Faculty", "mentor"), ("Course", "course")] if centre_lock else None
+    action_scopes = [("Mentor/Faculty", "mentor"), ("Course", "course")] if single_lock else None
     render_action_items(
         build_action_items(filt_resp, filt_q, cat1_label, cat2_label, scopes=action_scopes),
         cat1_label, cat2_label,
@@ -1297,7 +1311,7 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
         trend_chart(trend_by_date(filt_resp))
 
     section_header("🧭", "Breakdowns")
-    if centre_lock:
+    if single_lock:
         b2, b3 = st.columns(2)
     else:
         b1, b2, b3 = st.columns(3)
@@ -1353,7 +1367,7 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
 
     render_special_questions(filt_resp, special_cols)
 
-    comment_extra_cols = [("Mentor", "mentor")] if centre_lock else [("Centre", "centre"), ("Mentor", "mentor")]
+    comment_extra_cols = [("Mentor", "mentor")] if single_lock else [("Centre", "centre"), ("Mentor", "mentor")]
     render_comments_panel(filt_resp, key_prefix, extra_cols=comment_extra_cols)
 
     st.caption(f"Data refreshes automatically every {CACHE_TTL_SECONDS // 60} minutes, or click \"Refresh data\" above for an immediate pull.")
@@ -1403,21 +1417,27 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
         st.info(f"No responses yet in the {form_name} sheet. This dashboard will populate automatically once students start submitting the form.")
         return
 
+    single_lock = bool(centre_lock) and len(centre_lock) == 1
     if centre_lock:
-        locked_display_name = CENTRE_DISPLAY_NAMES[centre_lock]
-        response_df = response_df[response_df["centre"] == locked_display_name]
-        question_df = question_df[question_df["centre"] == locked_display_name]
+        locked_display_names = [CENTRE_DISPLAY_NAMES[c] for c in centre_lock]
+        response_df = response_df[response_df["centre"].isin(locked_display_names)]
+        question_df = question_df[question_df["centre"].isin(locked_display_names)]
         if response_df.empty:
-            st.info(f"No responses yet for {locked_display_name} in the {form_name} sheet.")
+            st.info(f"No responses yet for {', '.join(locked_display_names)} in the {form_name} sheet.")
             return
 
     # Filters — Centre + Course only; there's no Mentor/Faculty dimension on this form.
     fcol1, fcol2, fcol3 = st.columns([2, 2, 1])
-    if centre_lock:
-        centre_sel = CENTRE_DISPLAY_NAMES[centre_lock]
+    if single_lock:
+        centre_sel = locked_display_names[0]
         with fcol1:
             st.markdown("**Learning Centre**")
             st.markdown(f"🔒 {centre_sel}")
+    elif centre_lock:
+        with fcol1:
+            st.caption(f"🔒 Access limited to: {', '.join(locked_display_names)}")
+            centre_options = ["All My Centres"] + locked_display_names
+            centre_sel = render_centre_filter(key_prefix, centre_options)
     else:
         centres = sorted(response_df["centre"].dropna().unique().tolist())
         with fcol1:
@@ -1434,7 +1454,7 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
 
     filt_resp = response_df.copy()
     filt_q = question_df.copy()
-    if not centre_lock and centre_sel != "All Learning Centres":
+    if not single_lock and centre_sel not in ("All Learning Centres", "All My Centres"):
         filt_resp = filt_resp[filt_resp["centre"] == centre_sel]
         filt_q = filt_q[filt_q["centre"] == centre_sel]
     if course_sel != "All Courses":
@@ -1449,7 +1469,7 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
     cat2_avg = filt_resp["cat2"].mean() if not filt_resp.empty else None
     kpi_row(overall, cat1_avg, cat2_avg, len(filt_resp), cat1_label, cat2_label)
 
-    action_scopes = [("Course", "course")] if centre_lock else [("Learning Centre", "centre"), ("Course", "course")]
+    action_scopes = [("Course", "course")] if single_lock else [("Learning Centre", "centre"), ("Course", "course")]
     render_action_items(
         build_action_items(filt_resp, filt_q, cat1_label, cat2_label, scopes=action_scopes),
         cat1_label, cat2_label,
@@ -1460,7 +1480,7 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
         trend_chart(trend_by_date(filt_resp))
 
     section_header("🧭", "Breakdowns")
-    if centre_lock:
+    if single_lock:
         with st.container(border=True):
             st.markdown("**By Course**")
             grouped_breakdown_chart(group_avg(filt_resp, "course"), cat1_label, cat2_label)
@@ -1489,7 +1509,7 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
 
     render_special_questions(filt_resp, special_cols, cols_per_row=3)
 
-    infra_comment_cols = [("Course", "course")] if centre_lock else [("Centre", "centre"), ("Course", "course")]
+    infra_comment_cols = [("Course", "course")] if single_lock else [("Centre", "centre"), ("Course", "course")]
     render_comments_panel(filt_resp, key_prefix, extra_cols=infra_comment_cols)
 
     st.caption(f"Data refreshes automatically every {CACHE_TTL_SECONDS // 60} minutes, or click \"Refresh data\" above for an immediate pull.")
@@ -1528,19 +1548,31 @@ def build_authenticator():
 def resolve_role(roles):
     """roles: the list from st.session_state['roles'] for the signed-in user
     (a per-user field in secrets.toml — see SETUP_GUIDE.md). Returns
-    (is_admin, centre_lock): centre_lock is a CENTRE_KEYWORDS key for a
-    centre login, or None for an admin. If both come back False/None, the
+    (is_admin, centre_lock): centre_lock is a list of one or more
+    CENTRE_KEYWORDS keys for a centre-restricted login, or None for an
+    admin. A single-centre login is the normal case:
+    roles = ["centre:Khar"]. A multi-centre login (sees only that specific
+    subset, not every centre) lists more than one name comma-separated in
+    one role: roles = ["centre:Laxminagar,Bhawaniopore"] — or, equivalently,
+    as separate "centre:X" entries in the roles list; both forms are
+    merged into one deduplicated list. If both come back False/None, the
     account has no recognized role configured — callers must treat that as
     no access, not as admin access, so a typo'd role fails closed rather
-    than accidentally granting everything."""
+    than accidentally granting everything. An unrecognized centre name
+    mixed in with valid ones is silently dropped rather than denying the
+    whole role, so one typo only narrows access instead of removing it."""
     roles = roles or []
     if "admin" in roles:
         return True, None
+    locked = []
     for r in roles:
         if isinstance(r, str) and r.startswith("centre:"):
-            key = r.split(":", 1)[1]
-            if key in CENTRE_DISPLAY_NAMES:
-                return False, key
+            for key in r.split(":", 1)[1].split(","):
+                key = key.strip()
+                if key in CENTRE_DISPLAY_NAMES and key not in locked:
+                    locked.append(key)
+    if locked:
+        return False, locked
     return False, None
 
 
@@ -1594,7 +1626,7 @@ def main():
 
     top_l, top_r = st.columns([5, 1])
     with top_l:
-        who = CENTRE_DISPLAY_NAMES[centre_lock] if centre_lock else "Admin — all centres"
+        who = ", ".join(CENTRE_DISPLAY_NAMES[c] for c in centre_lock) if centre_lock else "Admin — all centres"
         st.caption(f"Signed in as **{st.session_state.get('name')}** · {who}")
     with top_r:
         authenticator.logout("Log out", location="main")

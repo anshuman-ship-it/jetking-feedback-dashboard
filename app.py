@@ -1643,6 +1643,34 @@ def resolve_role(roles):
     return False, None, None
 
 
+def mentor_has_any_responses(endpoint_key, centre_col, mentor_col, course_col, batch_col, qmap,
+                              centre_lock, mentor_lock):
+    """Used only to decide, for a mentor-locked (trainer) login, whether a
+    tab is even worth showing — e.g. a PD trainer who only ever appears in
+    the Employability sheet shouldn't see an empty Technical tab. Applies
+    the same centre_lock/mentor_lock filtering render_dashboard() would and
+    reports whether anything survives. load_sheet() is st.cache_data-cached,
+    so this doesn't cost an extra fetch once render_dashboard() also runs
+    for a tab that stays visible.
+    Fails OPEN (returns True) on a load error — a transient network hiccup
+    should surface as render_dashboard()'s own retry/error UI inside a
+    visible tab, not silently hide the tab as if there were no data."""
+    try:
+        raw_df, _ = load_sheet(endpoint_key)
+    except Exception:
+        return True
+    response_df, _ = build_response_and_question_df(raw_df, centre_col, mentor_col, course_col, batch_col, qmap)
+    if response_df.empty:
+        return False
+    if centre_lock:
+        locked_display_names = [CENTRE_DISPLAY_NAMES[c] for c in centre_lock]
+        response_df = response_df[response_df["centre"].isin(locked_display_names)]
+    if mentor_lock:
+        mkey = mentor_lock.strip().casefold()
+        response_df = response_df[response_df["mentor"].str.strip().str.casefold() == mkey]
+    return not response_df.empty
+
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -1703,64 +1731,104 @@ def main():
     with top_r:
         authenticator.logout("Log out", location="main")
 
-    tab1, tab2, tab3 = st.tabs(
-        ["Technical Session Feedback", "Employability Session Feedback", "Centre Infrastructure Feedback"]
-    )
-
-    with tab1:
-        render_dashboard(
-            key_prefix="tech",
-            endpoint_key="technical_url",
-            form_name="Technical Session Feedback",
-            cat1_label="Session Delivery Avg",
-            cat2_label="Mentor Behavior Avg",
-            qmap=TECH_Q,
-            centre_col="Jetking Learning Centre Name",
+    # A mentor-locked (trainer) login only sees tabs relevant to them: the
+    # Infrastructure tab is centre-facility feedback, not about any one
+    # mentor, so it's hidden entirely; Technical/Employability are each
+    # hidden individually if that trainer has no data there at all (e.g. a
+    # PD trainer who only ever appears in the Employability sheet). Every
+    # other login (admin, centre-locked manager/supervisor) is unaffected —
+    # all three tabs always show, exactly as before, including an empty one
+    # with its own "No responses yet" message.
+    if mentor_lock:
+        show_tech = mentor_has_any_responses(
+            endpoint_key="technical_url", centre_col="Jetking Learning Centre Name",
             mentor_col="Technical Mentor Name (Please select from the dropdown)",
-            course_col="Course Name",
-            batch_col="Batch Code (eg. 2627-JU-1234)",
-            comment_cols=TECH_COMMENT_COLS,
-            special_cols=TECH_SPECIAL_Q,
-            centre_lock=centre_lock,
-            mentor_lock=mentor_lock,
-            allow_raw_download=allow_raw_download,
+            course_col="Course Name", batch_col="Batch Code (eg. 2627-JU-1234)", qmap=TECH_Q,
+            centre_lock=centre_lock, mentor_lock=mentor_lock,
         )
+        show_emp = mentor_has_any_responses(
+            endpoint_key="employability_url", centre_col="Jetking Learning Centre Name",
+            mentor_col="Mentor Name", course_col="Course Name", batch_col="Batch Code", qmap=EMP_Q,
+            centre_lock=centre_lock, mentor_lock=mentor_lock,
+        )
+        show_infra = False
+    else:
+        show_tech = show_emp = show_infra = True
 
-    with tab2:
-        render_dashboard(
-            key_prefix="emp",
-            endpoint_key="employability_url",
-            form_name="Employability Session Feedback",
-            cat1_label="Session Content Avg",
-            cat2_label="Mentor Behavior Avg",
-            qmap=EMP_Q,
-            centre_col="Jetking Learning Centre Name",
-            mentor_col="Mentor Name",
-            course_col="Course Name",
-            batch_col="Batch Code",
-            comment_cols=EMP_COMMENT_COLS,
-            special_cols=EMP_SPECIAL_Q,
-            centre_lock=centre_lock,
-            mentor_lock=mentor_lock,
-            allow_raw_download=allow_raw_download,
+    if not (show_tech or show_emp or show_infra):
+        st.info(
+            "No feedback data found for you yet in either the Technical or Employability "
+            "sheet — this will populate automatically once students submit feedback for "
+            "one of your sessions."
         )
+        return
 
-    with tab3:
-        render_infrastructure_dashboard(
-            key_prefix="infra",
-            endpoint_key="infrastructure_url",
-            form_name="Centre Infrastructure Feedback",
-            cat1_label="Drinking Water Avg",
-            cat2_label="Washroom Facility Avg",
-            qmap=INFRA_Q,
-            centre_col="Jetking Learning Centre Name",
-            course_col="Course Name",
-            batch_col="Batch Code (eg. 2627-JU-1234)",
-            comment_cols=INFRA_COMMENT_COLS,
-            special_cols=INFRA_SPECIAL_Q,
-            centre_lock=centre_lock,
-            allow_raw_download=allow_raw_download,
-        )
+    tab_titles = []
+    if show_tech:
+        tab_titles.append("Technical Session Feedback")
+    if show_emp:
+        tab_titles.append("Employability Session Feedback")
+    if show_infra:
+        tab_titles.append("Centre Infrastructure Feedback")
+    tabs = iter(st.tabs(tab_titles))
+
+    if show_tech:
+        with next(tabs):
+            render_dashboard(
+                key_prefix="tech",
+                endpoint_key="technical_url",
+                form_name="Technical Session Feedback",
+                cat1_label="Session Delivery Avg",
+                cat2_label="Mentor Behavior Avg",
+                qmap=TECH_Q,
+                centre_col="Jetking Learning Centre Name",
+                mentor_col="Technical Mentor Name (Please select from the dropdown)",
+                course_col="Course Name",
+                batch_col="Batch Code (eg. 2627-JU-1234)",
+                comment_cols=TECH_COMMENT_COLS,
+                special_cols=TECH_SPECIAL_Q,
+                centre_lock=centre_lock,
+                mentor_lock=mentor_lock,
+                allow_raw_download=allow_raw_download,
+            )
+
+    if show_emp:
+        with next(tabs):
+            render_dashboard(
+                key_prefix="emp",
+                endpoint_key="employability_url",
+                form_name="Employability Session Feedback",
+                cat1_label="Session Content Avg",
+                cat2_label="Mentor Behavior Avg",
+                qmap=EMP_Q,
+                centre_col="Jetking Learning Centre Name",
+                mentor_col="Mentor Name",
+                course_col="Course Name",
+                batch_col="Batch Code",
+                comment_cols=EMP_COMMENT_COLS,
+                special_cols=EMP_SPECIAL_Q,
+                centre_lock=centre_lock,
+                mentor_lock=mentor_lock,
+                allow_raw_download=allow_raw_download,
+            )
+
+    if show_infra:
+        with next(tabs):
+            render_infrastructure_dashboard(
+                key_prefix="infra",
+                endpoint_key="infrastructure_url",
+                form_name="Centre Infrastructure Feedback",
+                cat1_label="Drinking Water Avg",
+                cat2_label="Washroom Facility Avg",
+                qmap=INFRA_Q,
+                centre_col="Jetking Learning Centre Name",
+                course_col="Course Name",
+                batch_col="Batch Code (eg. 2627-JU-1234)",
+                comment_cols=INFRA_COMMENT_COLS,
+                special_cols=INFRA_SPECIAL_Q,
+                centre_lock=centre_lock,
+                allow_raw_download=allow_raw_download,
+            )
 
 
 if __name__ == "__main__":

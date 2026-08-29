@@ -785,10 +785,14 @@ def trend_chart(trend_df):
     dates = pd.to_datetime(trend_df["date"])
     fig = go.Figure()
     fig.add_scatter(
-        x=dates, y=trend_df["avg"], mode="lines+markers",
+        x=dates, y=trend_df["avg"], mode="lines+markers+text",
         line=dict(color=PALETTE["series1"], width=2),
         marker=dict(size=7, color=PALETTE["series1"]),
         fill="tozeroy", fillcolor="rgba(42,120,214,0.10)",
+        text=[f"{v:.2f}" for v in trend_df["avg"]],
+        textposition="top center",
+        textfont=dict(size=11, color=THEME["chart_font"]),
+        cliponaxis=False,  # so a label on a point near the top of the 0-5 range doesn't get clipped
         hovertemplate="%{x|%b %d, %Y}<br><b>%{y:.2f}</b> / 5<extra></extra>",
         name="Daily average",
     )
@@ -812,7 +816,7 @@ def trend_chart(trend_df):
     fig.update_layout(
         yaxis=dict(range=[0, 5], gridcolor=THEME["chart_grid"], tickfont=dict(color=THEME["chart_font"])),
         xaxis=xaxis_kwargs,
-        height=280, margin=dict(t=10, b=10, l=10, r=10),
+        height=280, margin=dict(t=28, b=10, l=10, r=10),  # extra top margin so a data label near the top isn't clipped
         plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
         font=dict(color=THEME["chart_font"]), showlegend=False,
     )

@@ -791,6 +791,19 @@ def trend_chart(trend_df):
     # they belonged on the timeline (e.g. a weekly cadence with a skipped
     # week would still get an evenly-spaced tick for that empty week).
     x_labels = dates.dt.strftime("%b %d, %Y").tolist()
+    # The first/last point's label sits right at the plot's left/right edge
+    # on a category axis (no neighbor to push it off-center) — with scores
+    # in this app clustering near 5 on a fixed 0-5 axis, a centered label
+    # there can visually run into the y-axis's own "5" tick text (looked
+    # like a single garbled number, e.g. a "5" tick plus a "4.73" label
+    # read as "54.73"). Nudging just the two edge labels off-center — first
+    # one right, last one left — keeps every label clear of the axis text
+    # regardless of how high the score is, without needing special-casing
+    # by value.
+    textpositions = ["top center"] * len(x_labels)
+    if len(textpositions) >= 2:
+        textpositions[0] = "top right"
+        textpositions[-1] = "top left"
     fig = go.Figure()
     fig.add_scatter(
         x=x_labels, y=trend_df["avg"], mode="lines+markers+text",
@@ -798,7 +811,7 @@ def trend_chart(trend_df):
         marker=dict(size=7, color=PALETTE["series1"]),
         fill="tozeroy", fillcolor="rgba(42,120,214,0.10)",
         text=[f"{v:.2f}" for v in trend_df["avg"]],
-        textposition="top center",
+        textposition=textpositions,
         textfont=dict(size=11, color=THEME["chart_font"]),
         cliponaxis=False,  # so a label on a point near the top of the 0-5 range doesn't get clipped
         hovertemplate="%{x}<br><b>%{y:.2f}</b> / 5<extra></extra>",
@@ -810,11 +823,17 @@ def trend_chart(trend_df):
             type="category", categoryorder="array", categoryarray=x_labels,
             gridcolor=THEME["chart_grid"], tickfont=dict(color=THEME["chart_font"]),
         ),
-        height=280, margin=dict(t=28, b=10, l=10, r=10),  # extra top margin so a data label near the top isn't clipped
+        # Extra left/right margin (on top of the per-point textposition
+        # nudge above) gives a further buffer against the y-axis tick text
+        # and the plot's right edge; dropping the modebar removes its icons
+        # as a second thing the rightmost label could run into — not
+        # essential here since the chart already shows its own values as
+        # text and still supports hover.
+        height=280, margin=dict(t=32, b=10, l=35, r=25),
         plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
         font=dict(color=THEME["chart_font"]), showlegend=False,
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 def grouped_breakdown_chart(df_group, cat1_label, cat2_label):

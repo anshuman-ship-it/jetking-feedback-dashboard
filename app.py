@@ -1336,30 +1336,25 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
     with st.container(border=True):
         trend_chart(trend_by_date(filt_resp))
 
-    section_header("🧭", "Breakdowns")
-    if mentor_locked:
-        # Only one mentor in scope — a "By Mentor" bar would be a single
-        # trivial bar, so Course is the only breakdown left worth showing.
-        with st.container(border=True):
-            st.markdown("**By Course**")
-            grouped_breakdown_chart(group_avg(filt_resp, "course"), cat1_label, cat2_label)
-    else:
+    if not mentor_locked:
+        # Mentor-locked logins have nothing left to break down once Course
+        # is removed (a single mentor, single centre) — skip the section
+        # entirely rather than show an empty header.
+        section_header("🧭", "Breakdowns")
         if single_lock:
-            b2, b3 = st.columns(2)
+            with st.container(border=True):
+                st.markdown("**By Mentor / Faculty**")
+                grouped_breakdown_chart(group_avg(filt_resp, "mentor"), cat1_label, cat2_label)
         else:
-            b1, b2, b3 = st.columns(3)
+            b1, b2 = st.columns(2)
             with b1:
                 with st.container(border=True):
                     st.markdown("**By Learning Centre**")
                     grouped_breakdown_chart(group_avg(filt_resp, "centre"), cat1_label, cat2_label)
-        with b2:
-            with st.container(border=True):
-                st.markdown("**By Mentor / Faculty**")
-                grouped_breakdown_chart(group_avg(filt_resp, "mentor"), cat1_label, cat2_label)
-        with b3:
-            with st.container(border=True):
-                st.markdown("**By Course**")
-                grouped_breakdown_chart(group_avg(filt_resp, "course"), cat1_label, cat2_label)
+            with b2:
+                with st.container(border=True):
+                    st.markdown("**By Mentor / Faculty**")
+                    grouped_breakdown_chart(group_avg(filt_resp, "mentor"), cat1_label, cat2_label)
 
     section_header("🎯", "Question breakdown, weakest to strongest")
     q1, q2 = st.columns(2)
@@ -1516,21 +1511,14 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
     with st.container(border=True):
         trend_chart(trend_by_date(filt_resp))
 
-    section_header("🧭", "Breakdowns")
-    if single_lock:
+    if not single_lock:
+        # A centre-locked login has nothing left to break down once Course
+        # is removed (a single centre) — skip the section entirely rather
+        # than show an empty header.
+        section_header("🧭", "Breakdowns")
         with st.container(border=True):
-            st.markdown("**By Course**")
-            grouped_breakdown_chart(group_avg(filt_resp, "course"), cat1_label, cat2_label)
-    else:
-        b1, b2 = st.columns(2)
-        with b1:
-            with st.container(border=True):
-                st.markdown("**By Learning Centre**")
-                grouped_breakdown_chart(group_avg(filt_resp, "centre"), cat1_label, cat2_label)
-        with b2:
-            with st.container(border=True):
-                st.markdown("**By Course**")
-                grouped_breakdown_chart(group_avg(filt_resp, "course"), cat1_label, cat2_label)
+            st.markdown("**By Learning Centre**")
+            grouped_breakdown_chart(group_avg(filt_resp, "centre"), cat1_label, cat2_label)
 
     section_header("📊", "Response spread per facility question")
     st.caption("An average can hide a split opinion — this shows the actual mix of ratings, not just the mean.")

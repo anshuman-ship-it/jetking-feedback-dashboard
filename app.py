@@ -783,9 +783,17 @@ def trend_chart(trend_df):
         st.info("No responses yet — a day-by-day average will appear here once data comes in.")
         return
     dates = pd.to_datetime(trend_df["date"])
+    # Pre-formatted date strings, used as the x values themselves. Combined
+    # with a "category" (not "date") axis below, this means only dates that
+    # actually have a response get a position/tick on the axis — a
+    # continuous date axis would otherwise space ticks evenly across
+    # calendar time and effectively show dates with zero responses as if
+    # they belonged on the timeline (e.g. a weekly cadence with a skipped
+    # week would still get an evenly-spaced tick for that empty week).
+    x_labels = dates.dt.strftime("%b %d, %Y").tolist()
     fig = go.Figure()
     fig.add_scatter(
-        x=dates, y=trend_df["avg"], mode="lines+markers+text",
+        x=x_labels, y=trend_df["avg"], mode="lines+markers+text",
         line=dict(color=PALETTE["series1"], width=2),
         marker=dict(size=7, color=PALETTE["series1"]),
         fill="tozeroy", fillcolor="rgba(42,120,214,0.10)",
@@ -793,29 +801,15 @@ def trend_chart(trend_df):
         textposition="top center",
         textfont=dict(size=11, color=THEME["chart_font"]),
         cliponaxis=False,  # so a label on a point near the top of the 0-5 range doesn't get clipped
-        hovertemplate="%{x|%b %d, %Y}<br><b>%{y:.2f}</b> / 5<extra></extra>",
+        hovertemplate="%{x}<br><b>%{y:.2f}</b> / 5<extra></extra>",
         name="Daily average",
     )
-    # With a single data point, Plotly's autorange falls back to sub-second
-    # tick spacing. Force an explicit date axis and pad the range so one
-    # point still reads as a clean day on the x-axis.
-    span_days = (dates.max() - dates.min()).days
-    if len(dates) == 1 or span_days < 1:
-        x_range = [dates.min() - pd.Timedelta(days=1), dates.max() + pd.Timedelta(days=1)]
-        dtick = 24 * 60 * 60 * 1000  # one tick per day, in ms (Plotly date-axis convention)
-    else:
-        pad = pd.Timedelta(days=max(1, round(span_days * 0.1)))
-        x_range = [dates.min() - pad, dates.max() + pad]
-        dtick = None  # let Plotly choose a sensible interval for a wider spread
-    xaxis_kwargs = dict(
-        type="date", tickformat="%b %d, %Y", range=x_range, gridcolor=THEME["chart_grid"],
-        tickfont=dict(color=THEME["chart_font"]),
-    )
-    if dtick:
-        xaxis_kwargs["dtick"] = dtick
     fig.update_layout(
         yaxis=dict(range=[0, 5], gridcolor=THEME["chart_grid"], tickfont=dict(color=THEME["chart_font"])),
-        xaxis=xaxis_kwargs,
+        xaxis=dict(
+            type="category", categoryorder="array", categoryarray=x_labels,
+            gridcolor=THEME["chart_grid"], tickfont=dict(color=THEME["chart_font"]),
+        ),
         height=280, margin=dict(t=28, b=10, l=10, r=10),  # extra top margin so a data label near the top isn't clipped
         plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
         font=dict(color=THEME["chart_font"]), showlegend=False,

@@ -1132,7 +1132,7 @@ def render_comments_panel(filt_resp, key_prefix, extra_cols=None):
     render_wrapped_table(display_df)
 
 
-def render_raw_download_button(raw_df, filt_resp, key_prefix, form_name):
+def render_raw_download_button(raw_df, filt_resp, key_prefix, form_name, filter_summary=None):
     """Lets an authorized viewer download the ORIGINAL sheet rows (every
     column exactly as submitted, no canonicalization/rounding/relabeling)
     for whatever the current filters have narrowed the view down to.
@@ -1141,9 +1141,20 @@ def render_raw_download_button(raw_df, filt_resp, key_prefix, form_name):
     always mirrors the same set of responses currently on screen — never all
     of raw_df, and never the app's cleaned-up version of the data.
     Gated by an `allow_raw_download` flag per render call (see main()) —
-    currently only dhruti@jetking.com has this enabled."""
+    currently only dhruti@jetking.com has this enabled.
+    filter_summary: a plain-language string of the currently selected filters
+    (e.g. "Vashi Learning Centre · Pradnya Shelar"), rendered large and bold
+    directly above the download button — just the values, no "Filters
+    applied:" label (removed 31 Aug 2026 per Anshuman's ask; the values
+    themselves stayed)."""
     if filt_resp.empty:
         return
+    if filter_summary:
+        st.markdown(
+            f"<p style='font-size:1.2rem; font-weight:700; margin:4px 0 6px 0;'>"
+            f"{filter_summary}</p>",
+            unsafe_allow_html=True,
+        )
     raw_subset = raw_df.loc[filt_resp["_raw_index"]]
     csv_bytes = raw_subset.to_csv(index=False).encode("utf-8")
     st.download_button(
@@ -1335,7 +1346,9 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
         filt_q = filt_q[filt_q["mentor"] == mentor_sel]
 
     if allow_raw_download:
-        render_raw_download_button(raw_df, filt_resp, key_prefix, form_name)
+        mentor_part = mentor_sel if mentor_sel else "All Mentors"
+        filter_summary = f"{centre_sel} · {mentor_part}"
+        render_raw_download_button(raw_df, filt_resp, key_prefix, form_name, filter_summary)
 
     overall = filt_resp["avg"].mean() if not filt_resp.empty else None
     cat1_avg = filt_resp["cat1"].mean() if not filt_resp.empty else None
@@ -1515,7 +1528,8 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
         filt_q = filt_q[filt_q["course"] == course_sel]
 
     if allow_raw_download:
-        render_raw_download_button(raw_df, filt_resp, key_prefix, form_name)
+        filter_summary = f"{centre_sel} · {course_sel}"
+        render_raw_download_button(raw_df, filt_resp, key_prefix, form_name, filter_summary)
 
     overall = filt_resp["avg"].mean() if not filt_resp.empty else None
     cat1_avg = filt_resp["cat1"].mean() if not filt_resp.empty else None

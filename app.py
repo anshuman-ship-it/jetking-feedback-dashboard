@@ -1117,22 +1117,22 @@ def render_comments_panel(filt_resp, key_prefix, extra_cols=None):
         row.update(r["comments"])
         display_rows.append(row)
     display_df = pd.DataFrame(display_rows)
-    # A plain HTML table instead of st.dataframe: st.dataframe truncates long
-    # cells to a single line with no way to force wrapping, which was cutting
-    # off free-text answers (Suggestions especially) instead of showing them.
-    render_wrapped_table(display_df)
     st.download_button(
         "⬇️ Download comments (CSV)",
         data=display_df.to_csv(index=False).encode("utf-8"),
         file_name=f"{key_prefix}_comments.csv",
         mime="text/csv",
         key=f"{key_prefix}_comments_download",
-        help="Exactly the comments shown in the table above — same filters and "
+        help="Exactly the comments shown in the table below — same filters and "
              "the 'needing attention' checkbox, if you've ticked it.",
     )
+    # A plain HTML table instead of st.dataframe: st.dataframe truncates long
+    # cells to a single line with no way to force wrapping, which was cutting
+    # off free-text answers (Suggestions especially) instead of showing them.
+    render_wrapped_table(display_df)
 
 
-def render_raw_download_button(raw_df, filt_resp, key_prefix, form_name, filter_summary=None):
+def render_raw_download_button(raw_df, filt_resp, key_prefix, form_name):
     """Lets an authorized viewer download the ORIGINAL sheet rows (every
     column exactly as submitted, no canonicalization/rounding/relabeling)
     for whatever the current filters have narrowed the view down to.
@@ -1141,19 +1141,9 @@ def render_raw_download_button(raw_df, filt_resp, key_prefix, form_name, filter_
     always mirrors the same set of responses currently on screen — never all
     of raw_df, and never the app's cleaned-up version of the data.
     Gated by an `allow_raw_download` flag per render call (see main()) —
-    currently only dhruti@jetking.com has this enabled.
-    filter_summary: a plain-language string of the currently selected filters
-    (e.g. "Vashi · Pradnya Shelar"), rendered large and bold directly above
-    the download button so the exact scope of the export is unmissable
-    without having to look back up at the dropdowns."""
+    currently only dhruti@jetking.com has this enabled."""
     if filt_resp.empty:
         return
-    if filter_summary:
-        st.markdown(
-            f"<p style='font-size:1.2rem; font-weight:700; margin:4px 0 6px 0;'>"
-            f"Filters applied: {filter_summary}</p>",
-            unsafe_allow_html=True,
-        )
     raw_subset = raw_df.loc[filt_resp["_raw_index"]]
     csv_bytes = raw_subset.to_csv(index=False).encode("utf-8")
     st.download_button(
@@ -1345,9 +1335,7 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
         filt_q = filt_q[filt_q["mentor"] == mentor_sel]
 
     if allow_raw_download:
-        mentor_part = mentor_sel if mentor_sel else "All Mentors"
-        filter_summary = f"{centre_sel} · {mentor_part}"
-        render_raw_download_button(raw_df, filt_resp, key_prefix, form_name, filter_summary)
+        render_raw_download_button(raw_df, filt_resp, key_prefix, form_name)
 
     overall = filt_resp["avg"].mean() if not filt_resp.empty else None
     cat1_avg = filt_resp["cat1"].mean() if not filt_resp.empty else None
@@ -1527,8 +1515,7 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
         filt_q = filt_q[filt_q["course"] == course_sel]
 
     if allow_raw_download:
-        filter_summary = f"{centre_sel} · {course_sel}"
-        render_raw_download_button(raw_df, filt_resp, key_prefix, form_name, filter_summary)
+        render_raw_download_button(raw_df, filt_resp, key_prefix, form_name)
 
     overall = filt_resp["avg"].mean() if not filt_resp.empty else None
     cat1_avg = filt_resp["cat1"].mean() if not filt_resp.empty else None

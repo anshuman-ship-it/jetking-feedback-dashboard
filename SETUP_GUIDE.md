@@ -102,6 +102,11 @@ writes to `secrets.toml` itself and never saves the plaintext password
 anywhere, so you still need to tell the person their new password directly
 (and never paste that plaintext anywhere that gets committed to git).
 
+For a brand-new account, it now also asks whether to have that person set
+their own password the first time they sign in, instead of keeping the
+temporary one you generate for them indefinitely — see section 2b below for
+how that works and the one-time setup it needs.
+
 Never put a plain-text password in `secrets.toml` — only the `$2b$...` hash
 `reset_password.py` prints out. (The one-liner it wraps, if you ever need it
 directly: `python -c "import streamlit_authenticator as stauth; print(stauth.Hasher.hash('the-plaintext-password'))"`.)
@@ -111,6 +116,64 @@ doesn't match one of `CENTRE_DISPLAY_NAMES` in `app.py`) signs in
 successfully but is stopped with a "no access role configured" message and
 sees no dashboard content — that's deliberate fail-closed behavior, not a
 bug, so a typo in a centre name can't accidentally grant broader access.
+
+## 2b. Self-service password setup (7 Sep 2026)
+
+Two new things, both shipped in this update:
+- **Anyone signed in can change their own password** — a "🔑 Change password" box in the sidebar.
+- **A brand-new account can be told to set its own password the first time it signs in**, instead of keeping the temporary one you generated for it forever.
+
+### Why this needs a one-time setup step
+
+`secrets.toml` (and the copy of it pasted into Streamlit Community Cloud's Settings → Secrets) is **read-only while the app is running** — there's no way for the app itself to save a changed password back into it. So a self-set password needs somewhere *else* to live that the app CAN write to: a small, dedicated Google Sheet, written via a Google Cloud **service account** (a robot account, not your own Google login).
+
+I've already created the sheet — **"Jetking Dashboard – Password Store"** — in your Drive:
+`https://docs.google.com/spreadsheets/d/1rpbBfBFHJO3Z1ATTpkCMODbjOcA8khg77n23wllcJ1k/edit`
+
+You don't need to do anything to that sheet itself — just leave it alone (don't rename/move/delete it) once it's wired up below. It just quietly stores password hashes, never plaintext passwords.
+
+**Until you complete the steps below, nothing changes** — no "Change password" box appears, no account is ever asked to set its own password, and the app works exactly as it does today. This is entirely optional and safe to skip if you'd rather keep resetting passwords yourself via `reset_password.py`.
+
+### One-time setup (about 10 minutes)
+
+1. **Create a Google Cloud project** (skip if you already have one you're happy to use): go to [console.cloud.google.com](https://console.cloud.google.com), click the project dropdown at the top → **New Project** → give it any name (e.g. "Jetking Dashboard") → **Create**.
+2. **Enable the Google Sheets API**: with that project selected, go to **APIs & Services → Library**, search "Google Sheets API", click it, click **Enable**.
+3. **Create a service account**: **APIs & Services → Credentials → + Create Credentials → Service account**. Give it any name (e.g. "dashboard-password-store"). Click through **Create and Continue** → **Continue** → **Done** (no roles/access needed at the project level — access is granted by sharing the one sheet with it, in step 5).
+4. **Create a JSON key for it**: click into the service account you just created → **Keys** tab → **Add Key → Create new key → JSON** → **Create**. A `.json` file downloads to your computer — keep it safe, treat it like a password (whoever has it can write to that one sheet).
+5. **Share the password-store sheet with the service account**: open the JSON file in a text editor, find the `"client_email"` field (looks like `dashboard-password-store@your-project.iam.gserviceaccount.com`) — copy it. Open the sheet linked above → **Share** → paste that email → set it to **Editor** → **Send** (uncheck "Notify people" if it's offered, it's a robot account, no one reads that inbox).
+6. **Add the key + sheet ID to secrets.toml** — open the downloaded JSON file and copy its values into a new `[gcp_service_account]` block in **both** your local `.streamlit/secrets.toml` and Streamlit Community Cloud's Settings → Secrets:
+
+   ```toml
+   [gcp_service_account]
+   type = "service_account"
+   project_id = "..."              # from the JSON file
+   private_key_id = "..."          # from the JSON file
+   private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+   client_email = "...@....iam.gserviceaccount.com"
+   client_id = "..."               # from the JSON file
+   token_uri = "https://oauth2.googleapis.com/token"
+
+   [password_store]
+   sheet_id = "1rpbBfBFHJO3Z1ATTpkCMODbjOcA8khg77n23wllcJ1k"
+   ```
+
+   The `private_key` field in the JSON already has its newlines as literal `\n` characters — paste it in exactly as it appears in the JSON file (all on one line, inside quotes), don't reformat it.
+
+   Remember the Cloud Secrets paste-not-registering quirk noted elsewhere in this doc: after pasting, click into the box, add one character at the very end, and click **Save** while the button is blue.
+
+7. **Reboot the app** (Manage app → Reboot app on share.streamlit.io) so it picks up the new dependencies (`gspread`, `google-auth` — added to `requirements.txt` in this update) and the new secrets.
+
+That's it — once this is done, the "🔑 Change password" box appears in the sidebar for everyone, and any new account created with `force_password_change = true` (see below) will be walked through setting its own password the first time it signs in.
+
+### Creating a new account that sets its own password on first login
+
+Run `reset_password.py` as usual for a brand-new account — it now asks one extra question: *"Ask them to set their own password on first login?"* Answer yes, and it adds `force_password_change = true` to the printed block. Paste that block in as usual; the password you generate is just a **temporary** one to hand them — the first time they sign in with it, they'll see a mandatory "Set your password" screen before the dashboard, and from then on it's the password *they* chose that's checked, not the temporary one.
+
+If you skip this (say no, or leave `force_password_change` off an existing account), everything works exactly as it does today — you keep issuing/resetting their password yourself via `reset_password.py`, and they can still change it themselves anytime from the sidebar "Change password" box once the setup above is done.
+
+### How this interacts with `reset_password.py`
+
+An override a person sets for themselves (via the sidebar, or via the first-login screen) always wins over whatever's in `secrets.toml`. So `reset_password.py` still works as a "reset of last resort" — e.g. if someone forgets their self-set password, running it again and giving them a new temporary password overrides whatever they'd set, and (if you also flip `force_password_change` back to `true`) walks them through setting a new one of their own again on next login.
 
 ## 3. Run it locally
 

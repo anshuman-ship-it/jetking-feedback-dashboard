@@ -96,6 +96,7 @@ def main():
         sys.exit(1)
 
     existing = load_existing_user(email)
+    force_change = False
     if existing:
         name = existing.get("name", email)
         roles = existing.get("roles", [])
@@ -109,6 +110,14 @@ def main():
               f"a new account.")
         name = input("Full name to display (e.g. 'Khar Centre Manager'): ").strip()
         roles = prompt_role()
+        print("\nThe password below is just a TEMPORARY one to hand them —")
+        print("if the app's self-service password setup is configured (see")
+        print("SETUP_GUIDE.md's 'Self-service password setup' section), they")
+        print("can be made to set their own password the first time they")
+        print("sign in with it, instead of keeping this one long-term.")
+        force_change = input(
+            "Ask them to set their own password on first login? (y/n): "
+        ).strip().lower().startswith("y")
 
     password = prompt_password()
     password_hash = stauth.Hasher.hash(password)
@@ -126,10 +135,21 @@ def main():
     print(f'name = "{name}"')
     print(f'password = "{password_hash}"')
     print(f'roles = {roles_toml}')
+    if force_change:
+        print('force_password_change = true')
     print()
-    print("Then tell them their new password directly (it's not saved "
-          "anywhere by this script) — and don't paste the plaintext "
-          "password anywhere that gets committed to git.")
+    print("Then tell them their" + (" TEMPORARY" if force_change else " new") +
+          " password directly (it's not saved anywhere by this script) — "
+          "and don't paste the plaintext password anywhere that gets "
+          "committed to git.")
+    if force_change:
+        print(
+            "They'll be prompted to set their own password the first time "
+            "they sign in with the temporary one above (only if "
+            "[gcp_service_account]/[password_store] are configured in "
+            "secrets.toml — otherwise this flag is silently ignored and "
+            "they just keep using the temporary password, no dead end)."
+        )
 
 
 if __name__ == "__main__":

@@ -25,7 +25,22 @@ import streamlit as st
 import streamlit_authenticator as stauth
 import pandas as pd
 import requests
+import bcrypt
 import plotly.graph_objects as go
+
+# gspread/google-auth back the self-service password store (see the
+# "Self-service password / first-login setup" section near build_authenticator()
+# below) — optional at import time so the app doesn't crash on an older
+# deploy that hasn't picked up requirements.txt's new dependencies yet, or
+# before Anshuman has configured [gcp_service_account]/[password_store] in
+# secrets.toml. Every caller checks _GSPREAD_AVAILABLE / _password_store_available()
+# rather than assuming these succeeded.
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials as _GoogleServiceAccountCredentials
+    _GSPREAD_AVAILABLE = True
+except ImportError:
+    _GSPREAD_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Config
@@ -1588,16 +1603,267 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
 # secrets.toml under [credentials]; see SETUP_GUIDE.md for the exact schema
 # and how new accounts get their passwords hashed.
 
+# ---------------------------------------------------------------------------
+# Self-service password / first-login setup (7 Sep 2026)
+# ---------------------------------------------------------------------------
+#
+# secrets.toml (and Streamlit Community Cloud's Secrets box that backs it in
+# production) is read-only at runtime — the app has no way to write an
+# updated password hash back into it. So a self-set password needs somewhere
+# ELSE durable to live: a small, dedicated Google Sheet ("Jetking Dashboard –
+# Password Store"), written via a Google Cloud service account (not the
+# "Publish to web" CSV trick used for the feedback sheets — that's read-only
+# by design). The service account's credentials live in secrets.toml under
+# [gcp_service_account]; the sheet's ID lives under [password_store].sheet_id.
+# See SETUP_GUIDE.md section "Self-service password setup" for how Anshuman
+# provisions the service account and shares the sheet with it.
+#
+# Design: an override in this sheet ALWAYS wins over the password baked into
+# secrets.toml for that account (see build_authenticator() below) — so
+# resetting someone's temp password in secrets.toml (the existing
+# reset_password.py workflow) still works as an override-of-last-resort, but
+# once a person has set their own password even once, that's the one that's
+# actually checked. Everything here fails soft: if the service account/sheet
+# isn't configured yet (a fresh deploy, before Anshuman finishes the one-time
+# GCP setup) or a Sheets call errors out, _password_store_available() returns
+# False and both the forced first-login screen and the "Change password"
+# widget simply don't appear — the app behaves exactly as it did before this
+# feature existed, never a dead end.
+
+PASSWORD_SHEET_HEADERS = ["email", "password_hash", "updated_at"]
+
+
+@st.cache_resource
+def _get_gspread_client():
+    """Service-account gspread client, or None if gspread/google-auth aren't
+    installed or [gcp_service_account] isn't configured yet. Cached for the
+    life of the process — building credentials on every rerun would be
+    wasteful and Streamlit reruns the whole script on every widget click."""
+    if not _GSPREAD_AVAILABLE:
+        return None
+    try:
+        sa_info = dict(st.secrets["gcp_service_account"])
+    except Exception:
+        return None
+    try:
+        creds = _GoogleServiceAccountCredentials.from_service_account_info(
+            sa_info, scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        )
+        return gspread.authorize(creds)
+    except Exception:
+        return None
+
+
+@st.cache_resource
+def _get_password_sheet():
+    """The password-store worksheet (gspread Worksheet), or None if the
+    feature isn't configured/reachable. A thin seam over gspread's own API —
+    the local test harness swaps this out for a small in-memory fake
+    implementing just get_all_values()/update_cell()/append_row(), so tests
+    never touch a real Google Sheet."""
+    client = _get_gspread_client()
+    if client is None:
+        return None
+    try:
+        sheet_id = st.secrets["password_store"]["sheet_id"]
+    except Exception:
+        return None
+    try:
+        return client.open_by_key(sheet_id).sheet1
+    except Exception:
+        return None
+
+
+def _password_store_available():
+    return _get_password_sheet() is not None
+
+
+@st.cache_data(ttl=30)
+def load_password_overrides():
+    """Returns {email_lower: {"password_hash": ..., "updated_at": ...}} from
+    the password-store sheet. Cached for 30s so a Streamlit rerun (which
+    happens on every widget interaction, not just page loads) doesn't hit
+    the Sheets API constantly; save_password_override() clears this cache
+    immediately after a successful write so the new password is checked on
+    the very next rerun rather than up to 30s later. Returns {} (not an
+    error) if the feature isn't configured/reachable — callers then behave
+    exactly as if no one had ever changed a password."""
+    ws = _get_password_sheet()
+    if ws is None:
+        return {}
+    try:
+        records = ws.get_all_records()
+    except Exception:
+        return {}
+    overrides = {}
+    for row in records:
+        email = str(row.get("email", "")).strip().lower()
+        pw_hash = str(row.get("password_hash", "")).strip()
+        if email and pw_hash:
+            overrides[email] = {"password_hash": pw_hash, "updated_at": row.get("updated_at", "")}
+    return overrides
+
+
+def save_password_override(email, password_hash):
+    """Upserts one account's password hash into the override sheet (creating
+    the header row on first use). Returns True on success, False if the
+    feature isn't configured/reachable — callers show an error rather than
+    claiming the password was saved when it wasn't."""
+    ws = _get_password_sheet()
+    if ws is None:
+        return False
+    email_l = email.strip().lower()
+    now = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        values = ws.get_all_values()
+        if not values:
+            ws.append_row(PASSWORD_SHEET_HEADERS)
+            values = [PASSWORD_SHEET_HEADERS]
+        header = values[0]
+        email_col = header.index("email") + 1 if "email" in header else 1
+        hash_col = header.index("password_hash") + 1 if "password_hash" in header else 2
+        updated_col = header.index("updated_at") + 1 if "updated_at" in header else 3
+        row_idx = None
+        for i, row in enumerate(values[1:], start=2):
+            if len(row) >= email_col and row[email_col - 1].strip().lower() == email_l:
+                row_idx = i
+                break
+        if row_idx:
+            ws.update_cell(row_idx, hash_col, password_hash)
+            ws.update_cell(row_idx, updated_col, now)
+        else:
+            new_row = [""] * len(header)
+            new_row[email_col - 1] = email_l
+            new_row[hash_col - 1] = password_hash
+            new_row[updated_col - 1] = now
+            ws.append_row(new_row)
+    except Exception:
+        return False
+    load_password_overrides.clear()
+    return True
+
+
+def _effective_password_hash(email):
+    """The hash that's actually checked at login for this account right now:
+    the override sheet's if they've ever set/changed their own password,
+    otherwise whatever's baked into secrets.toml."""
+    if not email:
+        return None
+    override = load_password_overrides().get(email.strip().lower())
+    if override and override.get("password_hash"):
+        return override["password_hash"]
+    try:
+        return st.secrets["credentials"]["usernames"].get(email, {}).get("password")
+    except Exception:
+        return None
+
+
+def needs_password_setup(email):
+    """True if this account was created with force_password_change = true
+    (see SETUP_GUIDE.md) and hasn't set its own password yet (no override
+    row exists). Always False if the password-store feature isn't
+    configured/reachable — never blocks access over an optional feature
+    that isn't set up yet."""
+    if not email or not _password_store_available():
+        return False
+    if email.strip().lower() in load_password_overrides():
+        return False
+    try:
+        user = st.secrets["credentials"]["usernames"].get(email, {})
+    except Exception:
+        return False
+    return bool(user.get("force_password_change", False))
+
+
+def render_password_setup_form(email):
+    """Mandatory "create your own password" screen shown once, right after a
+    force_password_change account's first successful sign-in with its
+    temporary password. No "current password" field is needed here — typing
+    it correctly is exactly what got them to this screen. Calls st.stop()
+    itself; the caller (main()) doesn't render anything else this run."""
+    st.markdown(
+        """
+        <div class="hero-banner">
+            <h1>🔑 Set your password</h1>
+            <p>For security, please create your own password before continuing —
+            this replaces the temporary one you just signed in with.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.form("password_setup_form"):
+        pw1 = st.text_input("New password", type="password")
+        pw2 = st.text_input("Confirm new password", type="password")
+        submitted = st.form_submit_button("Save password and continue")
+    if submitted:
+        if len(pw1) < 8:
+            st.error("Please use at least 8 characters.")
+        elif pw1 != pw2:
+            st.error("Those didn't match — try again.")
+        else:
+            new_hash = stauth.Hasher.hash(pw1)
+            if save_password_override(email, new_hash):
+                st.success("Password saved — taking you to your dashboard…")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("Couldn't save your new password right now — try again in a moment, or contact Anshuman.")
+    st.stop()
+
+
+def render_change_password_widget(email):
+    """Sidebar 'Change password' expander for any signed-in user — a no-op
+    (renders nothing) if the password-store feature isn't configured yet,
+    so there's never a dead-end control on a deploy that hasn't been set up."""
+    if not _password_store_available():
+        return
+    with st.sidebar.expander("🔑 Change password"):
+        with st.form("change_password_form", clear_on_submit=True):
+            current_pw = st.text_input("Current password", type="password", key="cp_current")
+            new_pw1 = st.text_input("New password", type="password", key="cp_new1")
+            new_pw2 = st.text_input("Confirm new password", type="password", key="cp_new2")
+            submitted = st.form_submit_button("Update password")
+        if submitted:
+            effective_hash = _effective_password_hash(email)
+            current_ok = bool(effective_hash) and bcrypt.checkpw(
+                current_pw.encode("utf-8"), effective_hash.encode("utf-8")
+            )
+            if not current_ok:
+                st.error("Current password isn't right.")
+            elif len(new_pw1) < 8:
+                st.error("New password needs at least 8 characters.")
+            elif new_pw1 != new_pw2:
+                st.error("New passwords didn't match.")
+            else:
+                new_hash = stauth.Hasher.hash(new_pw1)
+                if save_password_override(email, new_hash):
+                    st.success("Password updated.")
+                else:
+                    st.error("Couldn't save right now — try again shortly.")
+
+
 def build_authenticator():
     """Returns an Authenticate instance built from secrets, or None if
-    [credentials] isn't configured there yet."""
+    [credentials] isn't configured there yet. Any account with a saved
+    password override (see load_password_overrides() above) has that hash
+    substituted in place of secrets.toml's baked-in one, so a self-set/
+    changed password is what's actually checked at login."""
     try:
         creds_secrets = st.secrets["credentials"]
     except KeyError:
         return None
     creds = dict(creds_secrets.to_dict())  # plain, mutable copy — st.secrets itself is read-only
+    usernames = creds.get("usernames", {})
+    overrides = load_password_overrides()
+    merged_usernames = {}
+    for email, user in usernames.items():
+        user = dict(user)
+        override = overrides.get(email.strip().lower())
+        if override and override.get("password_hash"):
+            user["password"] = override["password_hash"]
+        merged_usernames[email] = user
     return stauth.Authenticate(
-        credentials={"usernames": creds.get("usernames", {})},
+        credentials={"usernames": merged_usernames},
         cookie_name=creds.get("cookie_name", "jetking_feedback_auth"),
         cookie_key=creds["cookie_key"],
         cookie_expiry_days=creds.get("cookie_expiry_days", 30),
@@ -1741,6 +2007,16 @@ def main():
         st.stop()
 
     allow_raw_download = st.session_state.get("email") in RAW_DOWNLOAD_EMAILS
+
+    email = st.session_state.get("email")
+    if needs_password_setup(email):
+        # Mandatory "create your own password" screen for a brand-new
+        # force_password_change account — shown once, right after their
+        # first successful sign-in with the temp password Anshuman gave
+        # them. Calls st.stop() itself; nothing below this renders this run.
+        render_password_setup_form(email)
+
+    render_change_password_widget(email)  # sidebar; a no-op if not configured yet
 
     top_l, top_r = st.columns([5, 1])
     with top_l:

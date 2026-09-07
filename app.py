@@ -960,10 +960,23 @@ def distribution_chart(dist_df):
             hovertemplate="%{y}<br>" + LIKERT_LABELS[val] + ": <b>%{customdata:.0f}%</b><extra></extra>",
         )
 
+    # Trace order controls stacking order in Plotly's barmode="relative": the
+    # FIRST trace added on each side of zero sits innermost (touching the 0%
+    # line), and each trace added after it stacks further OUTWARD. So the
+    # negative-side traces are added Neutral-half -> Disagree -> Strongly
+    # Disagree, putting Strongly Disagree at the far-left tip and Neutral
+    # innermost (mirroring the positive side's Neutral -> Agree -> Strongly
+    # Agree, which already put Strongly Agree at the far-right tip). This
+    # keeps Strongly Disagree always at the far left and Strongly Agree
+    # always at the far right, regardless of each bucket's % — previously
+    # Strongly Disagree/Agree were added FIRST on their side, so they sat
+    # innermost (next to 0%) while Neutral was pushed out to the tip, which
+    # is why the color reading from the outer edge inward looked like it
+    # reshuffled from question to question as the underlying % shifted.
     fig = go.Figure()
-    fig.add_trace(bar(neg1, 1, True))
-    fig.add_trace(bar(neg2, 2, True))
     fig.add_trace(bar(neg3, 3, True))
+    fig.add_trace(bar(neg2, 2, True))
+    fig.add_trace(bar(neg1, 1, True))
     fig.add_trace(bar(pos3, 3, False))
     fig.add_trace(bar(pos4, 4, True))
     fig.add_trace(bar(pos5, 5, True))
@@ -1604,7 +1617,7 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
 # and how new accounts get their passwords hashed.
 
 # ---------------------------------------------------------------------------
-# Self-service password / first-login setup (7 Sep 2026)
+# Self-service password / first-login setup (7 Sep 2026, revised 7 Sep 2026)
 # ---------------------------------------------------------------------------
 #
 # secrets.toml (and Streamlit Community Cloud's Secrets box that backs it in
@@ -1620,15 +1633,33 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
 #
 # Design: an override in this sheet ALWAYS wins over the password baked into
 # secrets.toml for that account (see build_authenticator() below) — so
-# resetting someone's temp password in secrets.toml (the existing
+# resetting someone's password in secrets.toml (the existing
 # reset_password.py workflow) still works as an override-of-last-resort, but
 # once a person has set their own password even once, that's the one that's
 # actually checked. Everything here fails soft: if the service account/sheet
 # isn't configured yet (a fresh deploy, before Anshuman finishes the one-time
 # GCP setup) or a Sheets call errors out, _password_store_available() returns
-# False and both the forced first-login screen and the "Change password"
-# widget simply don't appear — the app behaves exactly as it did before this
-# feature existed, never a dead end.
+# False and both the "New here? Set up your account" box and the "Change
+# password" widget simply don't appear — the app behaves exactly as it did
+# before this feature existed, never a dead end.
+#
+# True self-registration, no temp password (revised 7 Sep 2026): a brand-new
+# account created with force_password_change = true gets NO real password —
+# reset_password.py bakes in an unguessable, never-disclosed placeholder
+# hash purely to satisfy streamlit-authenticator's schema, and Anshuman has
+# nothing to hand the person at all. Instead, on the sign-in page (BEFORE
+# authenticating — see render_self_registration_form() below), anyone whose
+# email is still pending (force_password_change = true, no override saved
+# yet — that's exactly what needs_password_setup() checks) can type their
+# own email and pick their own password directly, no current/temp password
+# needed. That's saved as this account's override, and from then on
+# needs_password_setup() is False for it (an override exists), so the box
+# won't accept that email again — they just use the normal sign-in form
+# below with the password they chose. Trade-off, accepted by Anshuman: since
+# nothing secret gates this besides knowing the email address itself,
+# anyone who knows a pending account's email before its real owner visits
+# the app could claim it first — acceptable here since only Jetking staff
+# know these addresses.
 
 PASSWORD_SHEET_HEADERS = ["email", "password_hash", "updated_at"]
 
@@ -1759,9 +1790,13 @@ def _effective_password_hash(email):
 
 
 def needs_password_setup(email):
-    """True if this account was created with force_password_change = true
-    (see SETUP_GUIDE.md) and hasn't set its own password yet (no override
-    row exists). Always False if the password-store feature isn't
+    """True if this account is still pending self-registration: it was
+    created with force_password_change = true (see SETUP_GUIDE.md) and
+    hasn't set its own password yet (no override row exists). Doubles as
+    the eligibility check for render_self_registration_form() below — an
+    email only gets to set a password there if this is True for it, which
+    also means it naturally stops accepting that email again the moment an
+    override is saved. Always False if the password-store feature isn't
     configured/reachable — never blocks access over an optional feature
     that isn't set up yet."""
     if not email or not _password_store_available():
@@ -1775,40 +1810,50 @@ def needs_password_setup(email):
     return bool(user.get("force_password_change", False))
 
 
-def render_password_setup_form(email):
-    """Mandatory "create your own password" screen shown once, right after a
-    force_password_change account's first successful sign-in with its
-    temporary password. No "current password" field is needed here — typing
-    it correctly is exactly what got them to this screen. Calls st.stop()
-    itself; the caller (main()) doesn't render anything else this run."""
-    st.markdown(
-        """
-        <div class="hero-banner">
-            <h1>🔑 Set your password</h1>
-            <p>For security, please create your own password before continuing —
-            this replaces the temporary one you just signed in with.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    with st.form("password_setup_form"):
-        pw1 = st.text_input("New password", type="password")
-        pw2 = st.text_input("Confirm new password", type="password")
-        submitted = st.form_submit_button("Save password and continue")
-    if submitted:
-        if len(pw1) < 8:
-            st.error("Please use at least 8 characters.")
-        elif pw1 != pw2:
-            st.error("Those didn't match — try again.")
-        else:
-            new_hash = stauth.Hasher.hash(pw1)
-            if save_password_override(email, new_hash):
-                st.success("Password saved — taking you to your dashboard…")
-                time.sleep(1)
-                st.rerun()
+def render_self_registration_form():
+    """"New here? Set up your account" box on the sign-in page, shown BEFORE
+    authentication — a brand-new force_password_change account has no real
+    password to type in the first place (reset_password.py bakes in an
+    unguessable placeholder no one knows), so this collects the person's own
+    email plus their chosen password directly, with no current/temp
+    password field at all. Only an email that needs_password_setup() —
+    pending, no override yet — is accepted; anything else gets one generic
+    error rather than confirming/denying which specific reason it failed
+    (already registered vs. not a recognized email vs. feature not
+    configured), so this can't be used to probe which accounts exist. A
+    no-op (renders nothing) if the password-store feature isn't configured
+    yet — never a dead-end control on a fresh deploy."""
+    if not _password_store_available():
+        return
+    with st.expander("🆕 New here? Set up your account"):
+        st.caption(
+            "If Anshuman told you your account is ready, enter your email and "
+            "choose your own password — no temporary password needed."
+        )
+        with st.form("self_registration_form", clear_on_submit=False):
+            email_in = st.text_input("Your work email", key="reg_email")
+            pw1 = st.text_input("Choose a password", type="password", key="reg_pw1")
+            pw2 = st.text_input("Confirm password", type="password", key="reg_pw2")
+            submitted = st.form_submit_button("Set my password")
+        if submitted:
+            email_clean = (email_in or "").strip()
+            if len(pw1) < 8:
+                st.error("Please use at least 8 characters.")
+            elif pw1 != pw2:
+                st.error("Those didn't match — try again.")
+            elif not needs_password_setup(email_clean):
+                st.error(
+                    "That email isn't ready for self-registration — double-check what you "
+                    "typed, or if you already have a password, just sign in below (or use "
+                    "the app's 'Change password' box once you're signed in). Otherwise, "
+                    "contact Anshuman."
+                )
             else:
-                st.error("Couldn't save your new password right now — try again in a moment, or contact Anshuman.")
-    st.stop()
+                new_hash = stauth.Hasher.hash(pw1)
+                if save_password_override(email_clean, new_hash):
+                    st.success("Password set! Sign in below with your email and the password you just chose.")
+                else:
+                    st.error("Couldn't save your password right now — try again in a moment, or contact Anshuman.")
 
 
 def render_change_password_widget(email):
@@ -1983,6 +2028,13 @@ def main():
         )
         st.stop()
 
+    # Shown only pre-login (a signed-in user doesn't need it) — a no-op if
+    # the password-store feature isn't configured yet. Placed above the
+    # sign-in form so a brand-new account can set its own password here
+    # instead of ever being handed one.
+    if st.session_state.get("authentication_status") is not True:
+        render_self_registration_form()
+
     authenticator.login(location="main", fields={"Form name": "Sign in", "Username": "Email", "Login": "Sign in"})
     auth_status = st.session_state.get("authentication_status")
 
@@ -2009,13 +2061,6 @@ def main():
     allow_raw_download = st.session_state.get("email") in RAW_DOWNLOAD_EMAILS
 
     email = st.session_state.get("email")
-    if needs_password_setup(email):
-        # Mandatory "create your own password" screen for a brand-new
-        # force_password_change account — shown once, right after their
-        # first successful sign-in with the temp password Anshuman gave
-        # them. Calls st.stop() itself; nothing below this renders this run.
-        render_password_setup_form(email)
-
     render_change_password_widget(email)  # sidebar; a no-op if not configured yet
 
     top_l, top_r = st.columns([5, 1])

@@ -1834,81 +1834,86 @@ def render_overview_dashboard(centre_lock, mentor_lock):
             latest = dates.max() if not dates.empty else None
             kpi_card(f["name"], n, None, help_text=f"Latest: {latest}" if latest else "No responses yet")
 
-    # --- % satisfied by form ---
-    section_header("✅", "% satisfied (4 or 5 out of 5) by form")
-    sat_rows = []
-    for f in FORMS:
-        resp = per_form[f["name"]]["resp"]
-        valid = resp["avg"].dropna() if not resp.empty else pd.Series([], dtype=float)
-        if valid.empty:
-            continue
-        pct = 100.0 * (valid >= 4).mean()
-        sat_rows.append((f["name"], pct, len(valid)))
-    if not sat_rows:
-        st.info("No scored responses yet across any form.")
-    else:
-        fig_sat = go.Figure(go.Bar(
-            x=[r[1] for r in sat_rows], y=[r[0] for r in sat_rows], orientation="h",
-            marker_color=[form_colors[r[0]] for r in sat_rows],
-            text=[f"{r[1]:.0f}% (n={r[2]})" for r in sat_rows],
-            textposition="outside",
-            hovertemplate="%{y}: <b>%{x:.1f}%</b><extra></extra>",
-        ))
-        fig_sat.update_layout(
-            xaxis=dict(
-                title=dict(text="% of responses averaging 4+ / 5", font=dict(color=THEME["chart_font"])),
-                range=[0, 100], gridcolor=THEME["chart_grid"], tickfont=dict(color=THEME["chart_font"]),
-            ),
-            yaxis=dict(tickfont=dict(color=THEME["chart_font"])),
-            showlegend=False, height=200, margin=dict(t=10, b=30, l=10, r=60),
-            plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
-            font=dict(color=THEME["chart_font"]),
-        )
-        st.plotly_chart(fig_sat, width="stretch")
-        st.caption(
-            "\"Satisfied\" = a response's overall average across that form's own questions "
-            "was 4 or higher, out of 5. Computed within each form (never blended across "
-            "forms), same as every other score on this page."
-        )
+    st.divider()
 
-    # --- Combined trend ---
-    section_header("📈", "Submission volume over time")
-    trend_frames = []
-    for f in FORMS:
-        resp = per_form[f["name"]]["resp"]
-        if resp.empty:
-            continue
-        t = resp.dropna(subset=["date"]).groupby("date").size().reset_index(name="count")
-        t["Form"] = f["name"]
-        trend_frames.append(t)
-    if not trend_frames:
-        st.info("No responses yet across any form.")
-    else:
-        combined_trend = pd.concat(trend_frames, ignore_index=True)
-        fig = go.Figure()
+    # --- % satisfied by form + Submission volume, side by side — pairs two
+    # related "how are we doing" numbers instead of stacking them full-width,
+    # one after another. ---
+    sat_col, trend_col = st.columns(2)
+
+    with sat_col:
+        section_header("✅", "% Satisfied by Form")
+        sat_rows = []
         for f in FORMS:
-            sub = combined_trend[combined_trend["Form"] == f["name"]].sort_values("date")
-            if sub.empty:
+            resp = per_form[f["name"]]["resp"]
+            valid = resp["avg"].dropna() if not resp.empty else pd.Series([], dtype=float)
+            if valid.empty:
                 continue
-            fig.add_trace(go.Scatter(
-                x=sub["date"], y=sub["count"], mode="lines+markers", name=f["name"],
-                line=dict(color=form_colors[f["name"]], width=2),
-                marker=dict(size=6, color=form_colors[f["name"]]),
+            pct = 100.0 * (valid >= 4).mean()
+            sat_rows.append((f["name"], pct, len(valid)))
+        if not sat_rows:
+            st.info("No scored responses yet.")
+        else:
+            fig_sat = go.Figure(go.Bar(
+                x=[r[1] for r in sat_rows], y=[r[0] for r in sat_rows], orientation="h",
+                marker_color=[form_colors[r[0]] for r in sat_rows],
+                text=[f"{r[1]:.0f}% (n={r[2]})" for r in sat_rows],
+                textposition="outside",
+                hovertemplate="%{y}: <b>%{x:.1f}%</b><extra></extra>",
             ))
-        fig.update_layout(
-            xaxis=dict(type="category", tickfont=dict(color=THEME["chart_font"]), gridcolor=THEME["chart_grid"]),
-            yaxis=dict(
-                title=dict(text="Responses", font=dict(color=THEME["chart_font"])),
-                gridcolor=THEME["chart_grid"], tickfont=dict(color=THEME["chart_font"]),
-            ),
-            height=280, margin=dict(t=10, b=40, l=10, r=10),
-            plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
-            font=dict(color=THEME["chart_font"]), legend=dict(orientation="h", y=-0.2),
-        )
-        st.plotly_chart(fig, width="stretch")
+            fig_sat.update_layout(
+                xaxis=dict(
+                    title=dict(text="% averaging 4+ / 5", font=dict(color=THEME["chart_font"])),
+                    range=[0, 100], gridcolor=THEME["chart_grid"], tickfont=dict(color=THEME["chart_font"]),
+                ),
+                yaxis=dict(tickfont=dict(color=THEME["chart_font"])),
+                showlegend=False, height=240, margin=dict(t=10, b=30, l=10, r=55),
+                plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
+                font=dict(color=THEME["chart_font"]),
+            )
+            st.plotly_chart(fig_sat, width="stretch")
+            st.caption("Computed within each form — never blended across forms.")
+
+    with trend_col:
+        section_header("📈", "Submission Volume")
+        trend_frames = []
+        for f in FORMS:
+            resp = per_form[f["name"]]["resp"]
+            if resp.empty:
+                continue
+            t = resp.dropna(subset=["date"]).groupby("date").size().reset_index(name="count")
+            t["Form"] = f["name"]
+            trend_frames.append(t)
+        if not trend_frames:
+            st.info("No responses yet.")
+        else:
+            combined_trend = pd.concat(trend_frames, ignore_index=True)
+            fig = go.Figure()
+            for f in FORMS:
+                sub = combined_trend[combined_trend["Form"] == f["name"]].sort_values("date")
+                if sub.empty:
+                    continue
+                fig.add_trace(go.Scatter(
+                    x=sub["date"], y=sub["count"], mode="lines+markers", name=f["name"],
+                    line=dict(color=form_colors[f["name"]], width=2),
+                    marker=dict(size=6, color=form_colors[f["name"]]),
+                ))
+            fig.update_layout(
+                xaxis=dict(type="category", tickfont=dict(color=THEME["chart_font"]), gridcolor=THEME["chart_grid"]),
+                yaxis=dict(
+                    title=dict(text="Responses", font=dict(color=THEME["chart_font"])),
+                    gridcolor=THEME["chart_grid"], tickfont=dict(color=THEME["chart_font"]),
+                ),
+                height=240, margin=dict(t=10, b=40, l=10, r=10),
+                plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
+                font=dict(color=THEME["chart_font"]), legend=dict(orientation="h", y=-0.25),
+            )
+            st.plotly_chart(fig, width="stretch")
+
+    st.divider()
 
     # --- Combined sentiment ---
-    section_header("🧠", "Comment sentiment — all forms combined")
+    section_header("🧠", "Comment Sentiment — All Forms Combined")
     sentiment_frames = [
         sdf for sdf in sentiment_by_form.values()
         if not sdf.empty and "Sentiment" in sdf.columns
@@ -1923,11 +1928,6 @@ def render_overview_dashboard(centre_lock, mentor_lock):
         order = ["Positive", "Neutral", "Mixed", "Negative"]
         counts = all_sent["Sentiment"].value_counts().reindex(order).fillna(0).astype(int)
         total = int(counts.sum())
-        st.caption(
-            f"{total} comment{'s' if total != 1 else ''} across Technical, Employability, "
-            "and Infrastructure combined — same keyword-based read as each tab's own "
-            "sentiment section, just pooled together here."
-        )
         fig2 = go.Figure(go.Bar(
             x=counts.values, y=counts.index, orientation="h",
             marker_color=[SENTIMENT_COLORS[s] for s in counts.index],
@@ -1941,11 +1941,12 @@ def render_overview_dashboard(centre_lock, mentor_lock):
                 gridcolor=THEME["chart_grid"], tickfont=dict(color=THEME["chart_font"]),
             ),
             yaxis=dict(tickfont=dict(color=THEME["chart_font"])),
-            showlegend=False, height=220, margin=dict(t=10, b=30, l=10, r=50),
+            showlegend=False, height=200, margin=dict(t=10, b=30, l=10, r=50),
             plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
             font=dict(color=THEME["chart_font"]),
         )
         st.plotly_chart(fig2, width="stretch")
+        st.caption(f"{total} comment{'s' if total != 1 else ''} pooled across all three forms.")
 
     # --- Mentor Behavior comparison ---
     # Technical and Employability ask the identical 9-question Mentor
@@ -1980,43 +1981,111 @@ def render_overview_dashboard(centre_lock, mentor_lock):
                 range=[0, 5], gridcolor=THEME["chart_grid"], tickfont=dict(color=THEME["chart_font"]),
             ),
             yaxis=dict(tickfont=dict(color=THEME["chart_font"]), autorange="reversed"),
-            height=420, margin=dict(t=10, b=40, l=10, r=10),
+            height=380, margin=dict(t=10, b=40, l=10, r=10),
             plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
-            font=dict(color=THEME["chart_font"]), legend=dict(orientation="h", y=-0.12),
+            font=dict(color=THEME["chart_font"]), legend=dict(orientation="h", y=-0.1),
         )
         st.plotly_chart(fig_mb, width="stretch")
-        st.caption(
-            "Both forms ask the identical 9 Mentor Behavior questions (B1-B9), so this is a "
-            "direct like-for-like comparison — unlike the rest of this page, which never "
-            "blends scores across forms."
-        )
+        st.caption("Identical 9-question block on both forms — a direct comparison.")
 
-    # --- Combined needs attention ---
-    section_header("⚠️", "Needs attention — all forms combined")
-    all_items = []
-    for f in FORMS:
-        info = per_form[f["name"]]
-        if info["resp"].empty:
-            continue
-        if not f["has_mentor"]:
-            scopes = [("Course", "course")] if single_lock else [("Learning Centre", "centre"), ("Course", "course")]
-        elif mkey:
-            scopes = [("Course", "course")]
-        elif single_lock:
-            scopes = [("Mentor/Faculty", "mentor"), ("Course", "course")]
+    st.divider()
+
+    # --- Details, tucked into expanders so the tab reads as a clean summary
+    # by default rather than a wall of stacked charts/tables. ---
+    with st.expander("🏢 By Learning Centre — all forms"):
+        # Skipped for a single-centre-locked login — there's only one row,
+        # so a table adds nothing.
+        if single_lock:
+            st.caption("Not applicable — this login is locked to a single centre.")
         else:
-            scopes = None  # default: Centre/Mentor/Course
-        items = build_action_items(info["resp"], info["q"], f["cat1_label"], f["cat2_label"], scopes=scopes)
-        for item in items:
-            item["Form"] = f["name"]
-        all_items.extend(items)
-    if not all_items:
-        st.success("Nothing below 3/5 across any form in the current selection.")
-    else:
-        all_items.sort(key=lambda d: d["Avg Score"])
-        items_df = pd.DataFrame(all_items)[["Form", "Category", "Area", "Item", "Avg Score", "Responses"]]
-        items_df["Avg Score"] = items_df["Avg Score"].map(lambda v: f"{v:.2f}")
-        render_wrapped_table(items_df)
+            all_centres = set()
+            for f in FORMS:
+                resp = per_form[f["name"]]["resp"]
+                if not resp.empty:
+                    all_centres.update(resp["centre"].dropna().unique())
+            if locked_display_names:
+                all_centres &= set(locked_display_names)
+            all_centres = sorted(all_centres)
+
+            if not all_centres:
+                st.info("No centre data available for the current selection.")
+            else:
+                centre_rows = []
+                for centre in all_centres:
+                    row = {"Centre": centre}
+                    weighted_sum, weighted_n = 0.0, 0
+                    pos_total, pos_n = 0, 0
+                    for f in FORMS:
+                        resp = per_form[f["name"]]["resp"]
+                        sub = resp[resp["centre"] == centre] if not resp.empty else resp
+                        valid = sub["avg"].dropna() if not sub.empty else pd.Series([], dtype=float)
+                        pct = 100.0 * (valid >= 4).mean() if not valid.empty else None
+                        row[f"{f['name']} % Sat"] = pct
+                        if pct is not None:
+                            weighted_sum += pct * len(valid)
+                            weighted_n += len(valid)
+                        sdf = sentiment_by_form.get(f["name"], pd.DataFrame())
+                        if not sdf.empty and "Learning Centre" in sdf.columns and "Sentiment" in sdf.columns:
+                            csent = sdf[sdf["Learning Centre"] == centre]
+                            if not csent.empty:
+                                pos_total += int((csent["Sentiment"] == "Positive").sum())
+                                pos_n += len(csent)
+                    row["Overall % Satisfied"] = (weighted_sum / weighted_n) if weighted_n else None
+                    row["Total Responses"] = weighted_n
+                    row["% Positive Comments"] = (100.0 * pos_total / pos_n) if pos_n else None
+                    centre_rows.append(row)
+
+                centre_df = pd.DataFrame(centre_rows)
+                search = st.text_input(
+                    "Search centres", key="overview_centre_search",
+                    placeholder="Type to filter by centre name…",
+                )
+                if search.strip():
+                    centre_df = centre_df[centre_df["Centre"].str.contains(search.strip(), case=False, na=False)]
+                centre_df = centre_df.sort_values("Overall % Satisfied", ascending=False, na_position="last")
+
+                pct_cols = [f"{f['name']} % Sat" for f in FORMS] + ["Overall % Satisfied", "% Positive Comments"]
+                column_config = {
+                    col: st.column_config.NumberColumn(col, format="%.0f%%") for col in pct_cols
+                }
+                column_config["Total Responses"] = st.column_config.NumberColumn("Total Responses", format="%d")
+                if centre_df.empty:
+                    st.info(f"No centre matches \"{search}\".")
+                else:
+                    st.dataframe(
+                        centre_df, column_config=column_config, hide_index=True, width="stretch",
+                    )
+            st.caption(
+                "Click a column header to sort. \"% Sat\" = share of that centre's responses "
+                "averaging 4+ out of 5, per form. \"Overall\" is n-weighted across forms, never "
+                "a blended 1-5 score. \"% Positive Comments\" pools sentiment across all forms."
+            )
+
+    with st.expander("⚠️ Needs attention — all forms combined"):
+        all_items = []
+        for f in FORMS:
+            info = per_form[f["name"]]
+            if info["resp"].empty:
+                continue
+            if not f["has_mentor"]:
+                scopes = [("Course", "course")] if single_lock else [("Learning Centre", "centre"), ("Course", "course")]
+            elif mkey:
+                scopes = [("Course", "course")]
+            elif single_lock:
+                scopes = [("Mentor/Faculty", "mentor"), ("Course", "course")]
+            else:
+                scopes = None  # default: Centre/Mentor/Course
+            items = build_action_items(info["resp"], info["q"], f["cat1_label"], f["cat2_label"], scopes=scopes)
+            for item in items:
+                item["Form"] = f["name"]
+            all_items.extend(items)
+        if not all_items:
+            st.success("Nothing below 3/5 across any form in the current selection.")
+        else:
+            all_items.sort(key=lambda d: d["Avg Score"])
+            items_df = pd.DataFrame(all_items)[["Form", "Category", "Area", "Item", "Avg Score", "Responses"]]
+            items_df["Avg Score"] = items_df["Avg Score"].map(lambda v: f"{v:.2f}")
+            render_wrapped_table(items_df)
 
     st.caption(f"Data refreshes automatically every {CACHE_TTL_SECONDS // 60} minutes, or click \"Refresh data\" above for an immediate pull.")
 

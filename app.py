@@ -1239,14 +1239,18 @@ def render_sentiment_panel(key_prefix, endpoint_key, centre_sel, mentor_sel, sin
         return
 
     section_header("🧠", "Comment sentiment")
-    st.caption(
-        "Automated keyword-based read of the comments above — a quick triage signal, "
-        "not a substitute for reading them yourself."
-    )
 
     order = ["Positive", "Neutral", "Mixed", "Negative"]
     counts = df["Sentiment"].value_counts().reindex(order).fillna(0).astype(int)
     total = int(counts.sum())
+
+    st.caption(
+        f"{total} comment{'s' if total != 1 else ''} across all free-text questions — "
+        "automated keyword-based read, a quick triage signal, not a substitute for "
+        "reading them yourself. Note: this counts individual comments, not responses, "
+        "so it won't match the response count above — a single response can include "
+        "more than one comment (one per free-text question on this form)."
+    )
 
     fig = go.Figure(go.Bar(
         x=counts.values, y=counts.index, orientation="h",
@@ -1726,6 +1730,205 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
         locked_display_names=(locked_display_names if centre_lock else None),
         has_mentor=False,
     )
+
+    st.caption(f"Data refreshes automatically every {CACHE_TTL_SECONDS // 60} minutes, or click \"Refresh data\" above for an immediate pull.")
+
+
+def render_overview_dashboard(centre_lock, mentor_lock):
+    """A single cross-form snapshot spanning Technical, Employability, and
+    Infrastructure: response counts, a combined submission trend, a combined
+    comment-sentiment breakdown, and one shared "needs attention" list — so
+    a viewer doesn't have to click through all three tabs just to get the
+    big picture.
+
+    Deliberately does NOT blend the 1-5 average scores across forms: they
+    measure different things on different question sets (Technical's
+    "Session Delivery" isn't Employability's "Session Content", and
+    Infrastructure isn't Likert-heavy at all), so a single mixed average
+    would be misleading rather than useful. What DOES combine cleanly:
+    response volume, sentiment, and a shared "needs attention" list — each
+    item already carries its own form-specific label and score.
+
+    Respects the same centre_lock/mentor_lock scoping as every other tab.
+    mentor_lock only narrows Technical/Employability (Infrastructure has no
+    mentor dimension at all) — a mentor-locked login still sees all three
+    forms here, with Infrastructure scoped to their centre only."""
+    FORMS = [
+        {
+            "key": "technical_url", "name": "Technical",
+            "centre_col": "Jetking Learning Centre Name",
+            "mentor_col": "Technical Mentor Name (Please select from the dropdown)",
+            "course_col": "Course Name", "batch_col": "Batch Code (eg. 2627-JU-1234)",
+            "qmap": TECH_Q, "cat1_label": "Session Delivery Avg", "cat2_label": "Mentor Behavior Avg",
+            "has_mentor": True,
+        },
+        {
+            "key": "employability_url", "name": "Employability",
+            "centre_col": "Jetking Learning Centre Name", "mentor_col": "Mentor Name",
+            "course_col": "Course Name", "batch_col": "Batch Code",
+            "qmap": EMP_Q, "cat1_label": "Session Content Avg", "cat2_label": "Mentor Behavior Avg",
+            "has_mentor": True,
+        },
+        {
+            "key": "infrastructure_url", "name": "Infrastructure",
+            "centre_col": "Jetking Learning Centre Name", "mentor_col": None,
+            "course_col": "Course Name", "batch_col": "Batch Code (eg. 2627-JU-1234)",
+            "qmap": INFRA_Q, "cat1_label": "Drinking Water Avg", "cat2_label": "Washroom Facility Avg",
+            "has_mentor": False,
+        },
+    ]
+    form_colors = {"Technical": PALETTE["series1"], "Employability": PALETTE["series2"], "Infrastructure": PALETTE["series3"]}
+
+    single_lock = bool(centre_lock) and len(centre_lock) == 1
+    locked_display_names = [CENTRE_DISPLAY_NAMES[c] for c in centre_lock] if centre_lock else None
+    mkey = mentor_lock.strip().casefold() if mentor_lock else None
+
+    if st.button("Refresh data", key="overview_refresh"):
+        st.cache_data.clear()
+        st.rerun()
+
+    per_form = {}
+    for f in FORMS:
+        try:
+            raw_df, _ = load_sheet(f["key"])
+        except Exception:
+            per_form[f["name"]] = {"resp": pd.DataFrame(), "q": pd.DataFrame()}
+            continue
+        resp_df, q_df = build_response_and_question_df(
+            raw_df, f["centre_col"], f["mentor_col"], f["course_col"], f["batch_col"], f["qmap"]
+        )
+        if locked_display_names:
+            resp_df = resp_df[resp_df["centre"].isin(locked_display_names)]
+            q_df = q_df[q_df["centre"].isin(locked_display_names)]
+        if mkey and f["has_mentor"]:
+            resp_df = resp_df[resp_df["mentor"].str.strip().str.casefold() == mkey]
+            q_df = q_df[q_df["mentor"].str.strip().str.casefold() == mkey]
+        per_form[f["name"]] = {"resp": resp_df, "q": q_df}
+
+    # --- Response counts ---
+    section_header("📋", "Responses at a glance")
+    cols = st.columns(3)
+    for col, f in zip(cols, FORMS):
+        resp = per_form[f["name"]]["resp"]
+        n = len(resp)
+        with col:
+            dates = resp["date"].dropna() if n else pd.Series([], dtype=object)
+            latest = dates.max() if not dates.empty else None
+            kpi_card(f["name"], n, None, help_text=f"Latest: {latest}" if latest else "No responses yet")
+
+    # --- Combined trend ---
+    section_header("📈", "Submission volume over time")
+    trend_frames = []
+    for f in FORMS:
+        resp = per_form[f["name"]]["resp"]
+        if resp.empty:
+            continue
+        t = resp.dropna(subset=["date"]).groupby("date").size().reset_index(name="count")
+        t["Form"] = f["name"]
+        trend_frames.append(t)
+    if not trend_frames:
+        st.info("No responses yet across any form.")
+    else:
+        combined_trend = pd.concat(trend_frames, ignore_index=True)
+        fig = go.Figure()
+        for f in FORMS:
+            sub = combined_trend[combined_trend["Form"] == f["name"]].sort_values("date")
+            if sub.empty:
+                continue
+            fig.add_trace(go.Scatter(
+                x=sub["date"], y=sub["count"], mode="lines+markers", name=f["name"],
+                line=dict(color=form_colors[f["name"]], width=2),
+                marker=dict(size=6, color=form_colors[f["name"]]),
+            ))
+        fig.update_layout(
+            xaxis=dict(type="category", tickfont=dict(color=THEME["chart_font"]), gridcolor=THEME["chart_grid"]),
+            yaxis=dict(
+                title=dict(text="Responses", font=dict(color=THEME["chart_font"])),
+                gridcolor=THEME["chart_grid"], tickfont=dict(color=THEME["chart_font"]),
+            ),
+            height=280, margin=dict(t=10, b=40, l=10, r=10),
+            plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
+            font=dict(color=THEME["chart_font"]), legend=dict(orientation="h", y=-0.2),
+        )
+        st.plotly_chart(fig, width="stretch")
+
+    # --- Combined sentiment ---
+    section_header("🧠", "Comment sentiment — all forms combined")
+    sentiment_frames = []
+    for f in FORMS:
+        try:
+            sdf, _ = load_sentiment(f["key"].replace("_url", "_sentiment_url"))
+        except Exception:
+            continue
+        if sdf.empty or "Sentiment" not in sdf.columns:
+            continue
+        sdf = sdf.copy()
+        if "Learning Centre" in sdf.columns and locked_display_names:
+            sdf = sdf[sdf["Learning Centre"].isin(locked_display_names)]
+        if mkey and f["has_mentor"] and "Mentor" in sdf.columns:
+            sdf = sdf[sdf["Mentor"].astype(str).str.strip().str.casefold() == mkey]
+        if not sdf.empty:
+            sentiment_frames.append(sdf)
+    if not sentiment_frames:
+        st.info(
+            "Sentiment data isn't set up yet for any form — see SETUP_GUIDE.md "
+            "section 1a, or ask Claude to help publish the Sentiment Analysis tabs."
+        )
+    else:
+        all_sent = pd.concat(sentiment_frames, ignore_index=True)
+        order = ["Positive", "Neutral", "Mixed", "Negative"]
+        counts = all_sent["Sentiment"].value_counts().reindex(order).fillna(0).astype(int)
+        total = int(counts.sum())
+        st.caption(
+            f"{total} comment{'s' if total != 1 else ''} across Technical, Employability, "
+            "and Infrastructure combined — same keyword-based read as each tab's own "
+            "sentiment section, just pooled together here."
+        )
+        fig2 = go.Figure(go.Bar(
+            x=counts.values, y=counts.index, orientation="h",
+            marker_color=[SENTIMENT_COLORS[s] for s in counts.index],
+            text=[f"{v} ({100 * v / total:.0f}%)" if total else "" for v in counts.values],
+            textposition="outside",
+            hovertemplate="%{y}: <b>%{x}</b><extra></extra>",
+        ))
+        fig2.update_layout(
+            xaxis=dict(
+                title=dict(text="Comments", font=dict(color=THEME["chart_font"])),
+                gridcolor=THEME["chart_grid"], tickfont=dict(color=THEME["chart_font"]),
+            ),
+            yaxis=dict(tickfont=dict(color=THEME["chart_font"])),
+            showlegend=False, height=220, margin=dict(t=10, b=30, l=10, r=50),
+            plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
+            font=dict(color=THEME["chart_font"]),
+        )
+        st.plotly_chart(fig2, width="stretch")
+
+    # --- Combined needs attention ---
+    section_header("⚠️", "Needs attention — all forms combined")
+    all_items = []
+    for f in FORMS:
+        info = per_form[f["name"]]
+        if info["resp"].empty:
+            continue
+        if not f["has_mentor"]:
+            scopes = [("Course", "course")] if single_lock else [("Learning Centre", "centre"), ("Course", "course")]
+        elif mkey:
+            scopes = [("Course", "course")]
+        elif single_lock:
+            scopes = [("Mentor/Faculty", "mentor"), ("Course", "course")]
+        else:
+            scopes = None  # default: Centre/Mentor/Course
+        items = build_action_items(info["resp"], info["q"], f["cat1_label"], f["cat2_label"], scopes=scopes)
+        for item in items:
+            item["Form"] = f["name"]
+        all_items.extend(items)
+    if not all_items:
+        st.success("Nothing below 3/5 across any form in the current selection.")
+    else:
+        all_items.sort(key=lambda d: d["Avg Score"])
+        items_df = pd.DataFrame(all_items)[["Form", "Category", "Area", "Item", "Avg Score", "Responses"]]
+        items_df["Avg Score"] = items_df["Avg Score"].map(lambda v: f"{v:.2f}")
+        render_wrapped_table(items_df)
 
     st.caption(f"Data refreshes automatically every {CACHE_TTL_SECONDS // 60} minutes, or click \"Refresh data\" above for an immediate pull.")
 
@@ -2234,7 +2437,7 @@ def main():
         )
         return
 
-    tab_titles = []
+    tab_titles = ["📊 Overview"]
     if show_tech:
         tab_titles.append("Technical Session Feedback")
     if show_emp:
@@ -2242,6 +2445,9 @@ def main():
     if show_infra:
         tab_titles.append("Centre Infrastructure Feedback")
     tabs = iter(st.tabs(tab_titles))
+
+    with next(tabs):
+        render_overview_dashboard(centre_lock, mentor_lock)
 
     if show_tech:
         with next(tabs):

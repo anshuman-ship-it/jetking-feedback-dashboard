@@ -1805,6 +1805,24 @@ def render_overview_dashboard(centre_lock, mentor_lock):
             q_df = q_df[q_df["mentor"].str.strip().str.casefold() == mkey]
         per_form[f["name"]] = {"resp": resp_df, "q": q_df}
 
+    # Comment sentiment per form, filtered by the same centre/mentor scope as
+    # per_form above — computed once here so both the "% Positive Comments"
+    # leaderboard column and the combined sentiment chart below reuse it
+    # instead of each fetching/filtering it separately.
+    sentiment_by_form = {}
+    for f in FORMS:
+        try:
+            sdf, _ = load_sentiment(f["key"].replace("_url", "_sentiment_url"))
+        except Exception:
+            sentiment_by_form[f["name"]] = pd.DataFrame()
+            continue
+        sdf = sdf.copy()
+        if "Learning Centre" in sdf.columns and locked_display_names:
+            sdf = sdf[sdf["Learning Centre"].isin(locked_display_names)]
+        if mkey and f["has_mentor"] and "Mentor" in sdf.columns:
+            sdf = sdf[sdf["Mentor"].astype(str).str.strip().str.casefold() == mkey]
+        sentiment_by_form[f["name"]] = sdf
+
     # --- Response counts ---
     section_header("📋", "Responses at a glance")
     cols = st.columns(3)
@@ -1815,6 +1833,43 @@ def render_overview_dashboard(centre_lock, mentor_lock):
             dates = resp["date"].dropna() if n else pd.Series([], dtype=object)
             latest = dates.max() if not dates.empty else None
             kpi_card(f["name"], n, None, help_text=f"Latest: {latest}" if latest else "No responses yet")
+
+    # --- % satisfied by form ---
+    section_header("✅", "% satisfied (4 or 5 out of 5) by form")
+    sat_rows = []
+    for f in FORMS:
+        resp = per_form[f["name"]]["resp"]
+        valid = resp["avg"].dropna() if not resp.empty else pd.Series([], dtype=float)
+        if valid.empty:
+            continue
+        pct = 100.0 * (valid >= 4).mean()
+        sat_rows.append((f["name"], pct, len(valid)))
+    if not sat_rows:
+        st.info("No scored responses yet across any form.")
+    else:
+        fig_sat = go.Figure(go.Bar(
+            x=[r[1] for r in sat_rows], y=[r[0] for r in sat_rows], orientation="h",
+            marker_color=[form_colors[r[0]] for r in sat_rows],
+            text=[f"{r[1]:.0f}% (n={r[2]})" for r in sat_rows],
+            textposition="outside",
+            hovertemplate="%{y}: <b>%{x:.1f}%</b><extra></extra>",
+        ))
+        fig_sat.update_layout(
+            xaxis=dict(
+                title=dict(text="% of responses averaging 4+ / 5", font=dict(color=THEME["chart_font"])),
+                range=[0, 100], gridcolor=THEME["chart_grid"], tickfont=dict(color=THEME["chart_font"]),
+            ),
+            yaxis=dict(tickfont=dict(color=THEME["chart_font"])),
+            showlegend=False, height=200, margin=dict(t=10, b=30, l=10, r=60),
+            plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
+            font=dict(color=THEME["chart_font"]),
+        )
+        st.plotly_chart(fig_sat, width="stretch")
+        st.caption(
+            "\"Satisfied\" = a response's overall average across that form's own questions "
+            "was 4 or higher, out of 5. Computed within each form (never blended across "
+            "forms), same as every other score on this page."
+        )
 
     # --- Combined trend ---
     section_header("📈", "Submission volume over time")
@@ -1852,23 +1907,109 @@ def render_overview_dashboard(centre_lock, mentor_lock):
         )
         st.plotly_chart(fig, width="stretch")
 
+    # --- By Learning Centre --- (skipped for a single-centre-locked login —
+    # there's only one row, so a leaderboard/breakdown adds nothing)
+    if not single_lock:
+        section_header("🏢", "By Learning Centre — all forms")
+        vol_frames = []
+        for f in FORMS:
+            resp = per_form[f["name"]]["resp"]
+            if resp.empty:
+                continue
+            v = resp.groupby("centre").size().reset_index(name="count")
+            v["Form"] = f["name"]
+            vol_frames.append(v)
+        if not vol_frames:
+            st.info("No responses yet to break down by centre.")
+        else:
+            combined_vol = pd.concat(vol_frames, ignore_index=True)
+            centres_present = sorted(combined_vol["centre"].unique())
+            fig_vol = go.Figure()
+            for f in FORMS:
+                sub = (
+                    combined_vol[combined_vol["Form"] == f["name"]]
+                    .set_index("centre")
+                    .reindex(centres_present)
+                    .fillna(0)
+                )
+                fig_vol.add_trace(go.Bar(
+                    x=centres_present, y=sub["count"], name=f["name"],
+                    marker_color=form_colors[f["name"]],
+                ))
+            fig_vol.update_layout(
+                barmode="group",
+                xaxis=dict(tickfont=dict(color=THEME["chart_font"])),
+                yaxis=dict(
+                    title=dict(text="Responses", font=dict(color=THEME["chart_font"])),
+                    gridcolor=THEME["chart_grid"], tickfont=dict(color=THEME["chart_font"]),
+                ),
+                height=300, margin=dict(t=10, b=60, l=10, r=10),
+                plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
+                font=dict(color=THEME["chart_font"]), legend=dict(orientation="h", y=-0.3),
+            )
+            st.plotly_chart(fig_vol, width="stretch")
+
+        all_centres = set()
+        for f in FORMS:
+            resp = per_form[f["name"]]["resp"]
+            if not resp.empty:
+                all_centres.update(resp["centre"].dropna().unique())
+        if locked_display_names:
+            all_centres &= set(locked_display_names)
+        all_centres = sorted(all_centres)
+
+        if not all_centres:
+            st.info("No centre data available for the current selection.")
+        else:
+            leaderboard_rows = []
+            for centre in all_centres:
+                row = {"Centre": centre}
+                weighted_sum, weighted_n = 0.0, 0
+                pos_total, pos_n = 0, 0
+                for f in FORMS:
+                    resp = per_form[f["name"]]["resp"]
+                    sub = resp[resp["centre"] == centre] if not resp.empty else resp
+                    valid = sub["avg"].dropna() if not sub.empty else pd.Series([], dtype=float)
+                    if valid.empty:
+                        row[f["name"]] = "—"
+                    else:
+                        pct = 100.0 * (valid >= 4).mean()
+                        row[f["name"]] = f"{pct:.0f}% (n={len(valid)})"
+                        weighted_sum += pct * len(valid)
+                        weighted_n += len(valid)
+                    sdf = sentiment_by_form.get(f["name"], pd.DataFrame())
+                    if not sdf.empty and "Learning Centre" in sdf.columns and "Sentiment" in sdf.columns:
+                        csent = sdf[sdf["Learning Centre"] == centre]
+                        if not csent.empty:
+                            pos_total += int((csent["Sentiment"] == "Positive").sum())
+                            pos_n += len(csent)
+                row["_overall_pct"] = (weighted_sum / weighted_n) if weighted_n else None
+                row["_overall_n"] = weighted_n
+                row["% Positive Comments"] = f"{100.0 * pos_total / pos_n:.0f}% (n={pos_n})" if pos_n else "—"
+                leaderboard_rows.append(row)
+
+            lb_df = pd.DataFrame(leaderboard_rows)
+            lb_df["_sort"] = lb_df["_overall_pct"].fillna(-1)
+            lb_df = lb_df.sort_values("_sort", ascending=False)
+            lb_df["Overall % Satisfied"] = lb_df.apply(
+                lambda r: f"{r['_overall_pct']:.0f}% (n={r['_overall_n']})" if pd.notna(r["_overall_pct"]) else "—",
+                axis=1,
+            )
+            display_cols = ["Centre"] + [f["name"] for f in FORMS] + ["Overall % Satisfied", "% Positive Comments"]
+            render_wrapped_table(lb_df[display_cols])
+        st.caption(
+            "\"% Sat\" per form = share of that centre's responses averaging 4+ out of 5. "
+            "\"Overall % Satisfied\" weights each form by its response count at that centre "
+            "(never blends the 1-5 scores themselves). \"% Positive Comments\" pools comment "
+            "sentiment across all three forms."
+        )
+
     # --- Combined sentiment ---
     section_header("🧠", "Comment sentiment — all forms combined")
-    sentiment_frames = []
-    for f in FORMS:
-        try:
-            sdf, _ = load_sentiment(f["key"].replace("_url", "_sentiment_url"))
-        except Exception:
-            continue
-        if sdf.empty or "Sentiment" not in sdf.columns:
-            continue
-        sdf = sdf.copy()
-        if "Learning Centre" in sdf.columns and locked_display_names:
-            sdf = sdf[sdf["Learning Centre"].isin(locked_display_names)]
-        if mkey and f["has_mentor"] and "Mentor" in sdf.columns:
-            sdf = sdf[sdf["Mentor"].astype(str).str.strip().str.casefold() == mkey]
-        if not sdf.empty:
-            sentiment_frames.append(sdf)
+    sentiment_frames = [
+        sdf for sdf in sentiment_by_form.values()
+        if not sdf.empty and "Sentiment" in sdf.columns
+    ]
     if not sentiment_frames:
         st.info(
             "Sentiment data isn't set up yet for any form — see SETUP_GUIDE.md "
@@ -1902,6 +2043,50 @@ def render_overview_dashboard(centre_lock, mentor_lock):
             font=dict(color=THEME["chart_font"]),
         )
         st.plotly_chart(fig2, width="stretch")
+
+    # --- Mentor Behavior comparison ---
+    # Technical and Employability ask the identical 9-question Mentor
+    # Behavior block (B1-B9, same wording, same short labels) — see TECH_Q /
+    # EMP_Q above — so this is the one place a straight side-by-side
+    # comparison between the two forms is genuinely apples-to-apples.
+    section_header("🎓", "Mentor Behavior — Technical vs Employability")
+    tq = per_form["Technical"]["q"]
+    eq = per_form["Employability"]["q"]
+    tq_b = tq[tq["cat"] == "cat2"] if not tq.empty else tq
+    eq_b = eq[eq["cat"] == "cat2"] if not eq.empty else eq
+    if tq_b.empty and eq_b.empty:
+        st.info("No Mentor Behavior responses yet for Technical or Employability.")
+    else:
+        b_labels = {code: short_label for code, _, short_label, cat in TECH_Q if cat == "cat2"}
+        codes = list(b_labels.keys())
+        t_avg = tq_b.groupby("code")["score"].mean() if not tq_b.empty else pd.Series(dtype=float)
+        e_avg = eq_b.groupby("code")["score"].mean() if not eq_b.empty else pd.Series(dtype=float)
+        fig_mb = go.Figure()
+        fig_mb.add_trace(go.Bar(
+            y=[b_labels[c] for c in codes], x=[t_avg.get(c) for c in codes],
+            name="Technical", orientation="h", marker_color=form_colors["Technical"],
+        ))
+        fig_mb.add_trace(go.Bar(
+            y=[b_labels[c] for c in codes], x=[e_avg.get(c) for c in codes],
+            name="Employability", orientation="h", marker_color=form_colors["Employability"],
+        ))
+        fig_mb.update_layout(
+            barmode="group",
+            xaxis=dict(
+                title=dict(text="Average score (1-5)", font=dict(color=THEME["chart_font"])),
+                range=[0, 5], gridcolor=THEME["chart_grid"], tickfont=dict(color=THEME["chart_font"]),
+            ),
+            yaxis=dict(tickfont=dict(color=THEME["chart_font"]), autorange="reversed"),
+            height=420, margin=dict(t=10, b=40, l=10, r=10),
+            plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
+            font=dict(color=THEME["chart_font"]), legend=dict(orientation="h", y=-0.12),
+        )
+        st.plotly_chart(fig_mb, width="stretch")
+        st.caption(
+            "Both forms ask the identical 9 Mentor Behavior questions (B1-B9), so this is a "
+            "direct like-for-like comparison — unlike the rest of this page, which never "
+            "blends scores across forms."
+        )
 
     # --- Combined needs attention ---
     section_header("⚠️", "Needs attention — all forms combined")

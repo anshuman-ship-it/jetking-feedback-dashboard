@@ -59,6 +59,18 @@ PALETTE = {
     "grid": "#e1e0d9",
 }
 
+# Colors for the "Comment sentiment" section (see render_sentiment_panel()) —
+# reuses existing PALETTE hues rather than introducing new ones, same
+# convention as the rest of the app: Positive/Negative reuse the existing
+# "good"/"needs attention" colors, Mixed gets its own amber (matches the
+# kpi_yellow tone used elsewhere), Neutral reuses the muted gray.
+SENTIMENT_COLORS = {
+    "Positive": PALETTE["series3"],
+    "Neutral": PALETTE["muted"],
+    "Mixed": "#c98500",
+    "Negative": PALETTE["serious"],
+}
+
 # Dark mode: chrome (backgrounds, borders, ink) is theme-aware; the data-encoding
 # colors above (PALETTE, LIKERT_COLORS, HEATMAP_COLORSCALE further down) are
 # deliberately NOT re-picked per theme — the same hue always means the same
@@ -568,6 +580,33 @@ def load_sheet(endpoint_key):
             resp.raise_for_status()
             df = pd.read_csv(io.StringIO(resp.text))
             df.columns = [str(c).replace("\n", " ").strip() for c in df.columns]
+            return df, datetime.now(IST)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            last_err = e
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+    raise last_err
+
+
+@st.cache_data(ttl=CACHE_TTL_SECONDS)
+def load_sentiment(endpoint_key):
+    """Same fetch/retry/caching shape as load_sheet(), pointed at a sheet's
+    separate "Sentiment Analysis" tab (see claude/sentiment-analysis-setup.md
+    in the project) instead of "Form Responses 1" — published to the web the
+    same way, just picking that tab instead when you publish. Centre names
+    are canonicalized the same way as the main response data (via
+    normalize_centre_display), so a centre filter selected against
+    response_df lines up correctly against this tab too."""
+    url = st.secrets["sheet_endpoints"][endpoint_key]
+    last_err = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, timeout=45)
+            resp.raise_for_status()
+            df = pd.read_csv(io.StringIO(resp.text))
+            df.columns = [str(c).replace("\n", " ").strip() for c in df.columns]
+            if "Learning Centre" in df.columns:
+                df["Learning Centre"] = df["Learning Centre"].map(normalize_centre_display)
             return df, datetime.now(IST)
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
             last_err = e
@@ -1160,6 +1199,82 @@ def render_comments_panel(filt_resp, key_prefix, extra_cols=None):
     render_wrapped_table(display_df)
 
 
+def render_sentiment_panel(key_prefix, endpoint_key, centre_sel, mentor_sel, single_lock,
+                            locked_display_names=None, has_mentor=True):
+    """Comment sentiment breakdown for this sheet, sourced from the separate
+    "Sentiment Analysis" tab each sheet's own Apps Script writes to on
+    demand (see claude/sentiment-analysis-setup.md in the project) — a
+    keyword-based classifier, not an AI model, so treat it as a quick triage
+    signal rather than ground truth. Filtered to the same centre/mentor
+    scope already selected above, same as the comments panel right above
+    this one.
+
+    Reads `<endpoint_key without "_url">_sentiment_url` from secrets.toml's
+    [sheet_endpoints] — same "Publish to web" CSV pattern as the main
+    response sheet, just pointed at the "Sentiment Analysis" tab instead of
+    "Form Responses 1". This is an optional add-on: if that secret isn't
+    configured yet, or the tab has no rows yet, this renders nothing and
+    never raises — it never blocks or breaks the rest of the dashboard.
+    has_mentor: False for the Infrastructure sheet, which has no mentor
+    dimension at all — skips the mentor filter entirely (mentor_sel is
+    ignored in that case)."""
+    sentiment_endpoint_key = endpoint_key.replace("_url", "_sentiment_url")
+    try:
+        sent_df, _ = load_sentiment(sentiment_endpoint_key)
+    except Exception:
+        return
+    if sent_df.empty or "Sentiment" not in sent_df.columns:
+        return
+
+    df = sent_df.copy()
+    if "Learning Centre" in df.columns:
+        if single_lock and locked_display_names:
+            df = df[df["Learning Centre"].isin(locked_display_names)]
+        elif centre_sel not in (None, "All Learning Centres", "All My Centres"):
+            df = df[df["Learning Centre"] == centre_sel]
+    if has_mentor and mentor_sel and "Mentor" in df.columns:
+        df = df[df["Mentor"].astype(str).str.strip().str.casefold() == str(mentor_sel).strip().casefold()]
+
+    if df.empty:
+        return
+
+    section_header("🧠", "Comment sentiment")
+    st.caption(
+        "Automated keyword-based read of the comments above — a quick triage signal, "
+        "not a substitute for reading them yourself."
+    )
+
+    order = ["Positive", "Neutral", "Mixed", "Negative"]
+    counts = df["Sentiment"].value_counts().reindex(order).fillna(0).astype(int)
+    total = int(counts.sum())
+
+    fig = go.Figure(go.Bar(
+        x=counts.values, y=counts.index, orientation="h",
+        marker_color=[SENTIMENT_COLORS[s] for s in counts.index],
+        text=[f"{v} ({100 * v / total:.0f}%)" if total else "" for v in counts.values],
+        textposition="outside",
+        hovertemplate="%{y}: <b>%{x}</b><extra></extra>",
+    ))
+    fig.update_layout(
+        xaxis=dict(
+            title=dict(text="Comments", font=dict(color=THEME["chart_font"])),
+            gridcolor=THEME["chart_grid"], tickfont=dict(color=THEME["chart_font"]),
+        ),
+        yaxis=dict(tickfont=dict(color=THEME["chart_font"])),
+        showlegend=False, height=220, margin=dict(t=10, b=30, l=10, r=50),
+        plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
+        font=dict(color=THEME["chart_font"]),
+    )
+    st.plotly_chart(fig, width="stretch")
+
+    flagged = df[df["Sentiment"].isin(["Negative", "Mixed"])]
+    if not flagged.empty:
+        cols = [c for c in ["Timestamp", "Learning Centre", "Mentor", "Course", "Question", "Comment", "Sentiment", "Reason"] if c in flagged.columns]
+        st.markdown("**Flagged Negative or Mixed** — worth a look:")
+        sort_col = "Timestamp" if "Timestamp" in flagged.columns else cols[0]
+        render_wrapped_table(flagged[cols].sort_values(sort_col, ascending=False))
+
+
 def render_raw_download_button(raw_df, filt_resp, key_prefix, form_name, filter_summary=None):
     """Lets an authorized viewer download the ORIGINAL sheet rows (every
     column exactly as submitted, no canonicalization/rounding/relabeling)
@@ -1465,6 +1580,12 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
         comment_extra_cols = [("Centre", "centre"), ("Mentor", "mentor")]
     render_comments_panel(filt_resp, key_prefix, extra_cols=comment_extra_cols)
 
+    render_sentiment_panel(
+        key_prefix, endpoint_key, centre_sel, mentor_sel, single_lock,
+        locked_display_names=(locked_display_names if centre_lock else None),
+        has_mentor=True,
+    )
+
     st.caption(f"Data refreshes automatically every {CACHE_TTL_SECONDS // 60} minutes, or click \"Refresh data\" above for an immediate pull.")
 
 
@@ -1599,6 +1720,12 @@ def render_infrastructure_dashboard(key_prefix, endpoint_key, form_name, cat1_la
 
     infra_comment_cols = [("Course", "course")] if single_lock else [("Centre", "centre"), ("Course", "course")]
     render_comments_panel(filt_resp, key_prefix, extra_cols=infra_comment_cols)
+
+    render_sentiment_panel(
+        key_prefix, endpoint_key, centre_sel, None, single_lock,
+        locked_display_names=(locked_display_names if centre_lock else None),
+        has_mentor=False,
+    )
 
     st.caption(f"Data refreshes automatically every {CACHE_TTL_SECONDS // 60} minutes, or click \"Refresh data\" above for an immediate pull.")
 

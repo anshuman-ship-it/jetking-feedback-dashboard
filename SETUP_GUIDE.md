@@ -43,6 +43,34 @@ kept in case that becomes possible), or (b) a Google Cloud service account,
 which authenticates without any browser/session and likely sidesteps this
 org policy entirely.
 
+## 1a. Optional: publish the Sentiment Analysis tabs
+
+Each sheet also has a separate, on-demand "Sentiment Analysis" tab, added by
+a keyword-based Apps Script classifier (see `claude/sentiment-analysis-setup.md`
+in the project, or ask Claude) — it's a quick triage signal on the free-text
+comments, not an AI model. This is optional: the app runs fine without it, it
+just skips the "Comment sentiment" section for that sheet until it's set up.
+
+1. In that sheet, make sure you've run **Sentiment Analysis → Run Analysis**
+   at least once, so the "Sentiment Analysis" tab actually has rows in it.
+2. Same as step 1 above: **File → Share → Publish to web**, this time
+   selecting the **"Sentiment Analysis"** tab specifically, format
+   **Comma-separated values (.csv)**, **Publish**.
+3. Copy that URL — this is your `technical_sentiment_url` (or
+   `employability_sentiment_url` / `infrastructure_sentiment_url`, matching
+   which sheet you're on).
+4. Repeat for the other two sheets if you want sentiment on all three tabs.
+5. Add whichever ones you have as new keys under `[sheet_endpoints]` in
+   `secrets.toml` (see `secrets.toml.example` for the exact key names) — both
+   your local `secrets.toml` and Streamlit Community Cloud's Secrets box (see
+   step 4 below).
+
+Since this reruns manually (you click the menu item in the Sheet whenever you
+want fresh sentiment, not automatically), the dashboard's sentiment section
+will only be as current as your last "Run Analysis" click in each sheet —
+worth a quick "Refresh data" + a fresh Apps Script run before an important
+review.
+
 ## 2. Install and configure the app
 
 On the machine that will run this (locally for now, or Streamlit Community
@@ -117,11 +145,11 @@ successfully but is stopped with a "no access role configured" message and
 sees no dashboard content — that's deliberate fail-closed behavior, not a
 bug, so a typo in a centre name can't accidentally grant broader access.
 
-## 2b. Self-service password setup (7 Sep 2026)
+## 2b. Self-service password setup (7 Sep 2026, revised 7 Sep 2026)
 
 Two new things, both shipped in this update:
 - **Anyone signed in can change their own password** — a "🔑 Change password" box in the sidebar.
-- **A brand-new account can be told to set its own password the first time it signs in**, instead of keeping the temporary one you generated for it forever.
+- **A brand-new account can set its own password the first time it visits the app** — you don't generate or hand out a password for it at all.
 
 ### Why this needs a one-time setup step
 
@@ -163,17 +191,19 @@ You don't need to do anything to that sheet itself — just leave it alone (don'
 
 7. **Reboot the app** (Manage app → Reboot app on share.streamlit.io) so it picks up the new dependencies (`gspread`, `google-auth` — added to `requirements.txt` in this update) and the new secrets.
 
-That's it — once this is done, the "🔑 Change password" box appears in the sidebar for everyone, and any new account created with `force_password_change = true` (see below) will be walked through setting its own password the first time it signs in.
+That's it — once this is done, the "🔑 Change password" box appears in the sidebar for everyone, and the sign-in page shows a new **"🆕 New here? Set up your account"** box for anyone whose account is still pending (see below).
 
-### Creating a new account that sets its own password on first login
+### Creating a new account with no password to hand out
 
-Run `reset_password.py` as usual for a brand-new account — it now asks one extra question: *"Ask them to set their own password on first login?"* Answer yes, and it adds `force_password_change = true` to the printed block. Paste that block in as usual; the password you generate is just a **temporary** one to hand them — the first time they sign in with it, they'll see a mandatory "Set your password" screen before the dashboard, and from then on it's the password *they* chose that's checked, not the temporary one.
+Run `reset_password.py` as usual for a brand-new account — it now asks one extra question: *"Let them set their own password on first visit, with nothing for you to hand them?"* Answer **yes**, and it adds `force_password_change = true` to the printed block and skips asking you for a password entirely — there's genuinely nothing generated to write down or share. Paste the printed block in as usual (both places), then just tell the person their account is ready. They go to the app, open **"🆕 New here? Set up your account"** on the sign-in page, type their own email address, and pick their own password directly — no password ever passes through you. Once they've done that, they just sign in normally below with whatever they chose.
 
-If you skip this (say no, or leave `force_password_change` off an existing account), everything works exactly as it does today — you keep issuing/resetting their password yourself via `reset_password.py`, and they can still change it themselves anytime from the sidebar "Change password" box once the setup above is done.
+If you skip this (say no, or leave `force_password_change` off an existing account), everything works exactly as it does today — you generate and hand them a real password yourself via `reset_password.py`, and they can still change it anytime from the sidebar "Change password" box once the setup above is done.
+
+**Trade-off worth knowing:** since nothing secret gates the self-registration box besides knowing the email address itself, anyone who learns a pending account's email before its real owner visits the app could claim it first by setting a password for it themselves. Acceptable here since only Jetking staff know these addresses, but if that's ever a concern for a specific account, use the normal (non-self-service) path for it instead — answer "no" to that question and hand them a password directly.
 
 ### How this interacts with `reset_password.py`
 
-An override a person sets for themselves (via the sidebar, or via the first-login screen) always wins over whatever's in `secrets.toml`. So `reset_password.py` still works as a "reset of last resort" — e.g. if someone forgets their self-set password, running it again and giving them a new temporary password overrides whatever they'd set, and (if you also flip `force_password_change` back to `true`) walks them through setting a new one of their own again on next login.
+An override a person sets for themselves (via the sidebar, or via the self-registration box) always wins over whatever's in `secrets.toml`. So `reset_password.py` still works as a "reset of last resort" — e.g. if someone forgets their self-set password, running it again and giving them a new password overrides whatever they'd set, and (if you also flip `force_password_change` back to `true`) makes the account eligible to self-register again on its next visit.
 
 ## 3. Run it locally
 

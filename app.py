@@ -1271,13 +1271,6 @@ def render_sentiment_panel(key_prefix, endpoint_key, centre_sel, mentor_sel, sin
     )
     st.plotly_chart(fig, width="stretch")
 
-    flagged = df[df["Sentiment"].isin(["Negative", "Mixed"])]
-    if not flagged.empty:
-        cols = [c for c in ["Timestamp", "Learning Centre", "Mentor", "Course", "Question", "Comment", "Sentiment", "Reason"] if c in flagged.columns]
-        st.markdown("**Flagged Negative or Mixed** — worth a look:")
-        sort_col = "Timestamp" if "Timestamp" in flagged.columns else cols[0]
-        render_wrapped_table(flagged[cols].sort_values(sort_col, ascending=False))
-
 
 def render_raw_download_button(raw_df, filt_resp, key_prefix, form_name, filter_summary=None):
     """Lets an authorized viewer download the ORIGINAL sheet rows (every

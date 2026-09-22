@@ -2594,7 +2594,11 @@ def main():
         )
         return
 
-    tab_titles = ["📊 Overview"]
+    # The "Overview" tab (render_overview_dashboard(), defined above) is
+    # temporarily removed from the tab bar per Anshuman's request (22 Sep
+    # 2026) — the function itself is left in place, unused, so it's a
+    # one-line change to bring back rather than a rebuild.
+    tab_titles = []
     if show_tech:
         tab_titles.append("Technical Session Feedback")
     if show_emp:
@@ -2602,9 +2606,6 @@ def main():
     if show_infra:
         tab_titles.append("Centre Infrastructure Feedback")
     tabs = iter(st.tabs(tab_titles))
-
-    with next(tabs):
-        render_overview_dashboard(centre_lock, mentor_lock)
 
     if show_tech:
         with next(tabs):

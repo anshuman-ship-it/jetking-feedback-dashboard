@@ -27,6 +27,8 @@ import pandas as pd
 import requests
 import bcrypt
 import plotly.graph_objects as go
+import plotly.graph_objects as go
+from telegram_registrations import render_telegram_registrations
 
 # gspread/google-auth back the self-service password store (see the
 # "Self-service password / first-login setup" section near build_authenticator()
@@ -2598,7 +2600,9 @@ def main():
         tab_titles.append("Employability Session Feedback")
     if show_infra:
         tab_titles.append("Centre Infrastructure Feedback")
-    tabs = iter(st.tabs(tab_titles))
+    if is_admin:
+        tab_titles.append("📲 Telegram Registrations")
+        tabs = iter(st.tabs(tab_titles))
 
     if show_tech:
         with next(tabs):
@@ -2657,6 +2661,11 @@ def main():
                 centre_lock=centre_lock,
                 allow_raw_download=allow_raw_download,
             )
+
+            
+    if is_admin:
+        with next(tabs):
+            render_telegram_registrations(is_admin=is_admin)
 
 
 if __name__ == "__main__":

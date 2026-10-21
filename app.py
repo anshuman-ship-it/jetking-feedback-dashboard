@@ -719,12 +719,28 @@ def trend_by_date(df):
     return g.sort_values("date")
 
 
-def question_ranking(qdf, cat):
+def form_order_labels(qmap, cat):
+    """Short labels for one category, in the order the questions appear in qmap
+    (which mirrors the order on the Google Form: D1..D8, B1..B9, S1..S9, etc.)."""
+    return [short_label for code, question_text, short_label, c in qmap if c == cat]
+
+
+def sort_by_form_order(df, qmap, cat):
+    """Reorder a per-question dataframe (one row per 'label') into form order.
+    Any label not in qmap (shouldn't happen) is kept, appended at the end."""
+    order = form_order_labels(qmap, cat)
+    rank = {lbl: i for i, lbl in enumerate(order)}
+    return df.assign(_o=df["label"].map(lambda l: rank.get(l, len(rank)))).sort_values("_o").drop(columns="_o")
+
+
+def question_ranking(qdf, cat, qmap=None, by_form_order=False):
     sub = qdf[qdf["cat"] == cat]
     if sub.empty:
         return pd.DataFrame(columns=["label", "avg", "n"])
     g = sub.groupby("label")["score"].agg(avg="mean", n="count").reset_index()
     g["avg"] = g["avg"].round(2)
+    if by_form_order and qmap is not None:
+        return sort_by_form_order(g, qmap, cat)
     return g.sort_values("avg", ascending=True)
 
 
@@ -741,8 +757,10 @@ def mentor_question_matrix(qdf, cat, qmap):
     return pivot, code_text
 
 
-def question_distribution(qdf, cat):
-    """Per-question % breakdown across the 5 Likert buckets, for the diverging stacked bar."""
+def question_distribution(qdf, cat, qmap=None, by_form_order=False):
+    """Per-question % breakdown across the 5 Likert buckets, for the diverging stacked bar.
+    by_form_order (with qmap): rows follow the form's question sequence instead of
+    weakest-first."""
     sub = qdf[qdf["cat"] == cat]
     if sub.empty:
         return pd.DataFrame()
@@ -757,7 +775,10 @@ def question_distribution(qdf, cat):
     pct = counts.div(n, axis=0) * 100
     pct["n"] = n
     pct["weighted_avg"] = sum(v * pct[v] for v in (1, 2, 3, 4, 5)) / 100
-    return pct.reset_index().sort_values("weighted_avg", ascending=True)
+    out = pct.reset_index()
+    if by_form_order and qmap is not None:
+        return sort_by_form_order(out, qmap, cat)
+    return out.sort_values("weighted_avg", ascending=True)
 
 
 def build_action_items(filt_resp, filt_q, cat1_label, cat2_label, threshold=3.0, scopes=None):
@@ -984,7 +1005,10 @@ def heatmap_chart(matrix_df, code_text):
     st.caption("Hover a cell to see the full question.")
 
 
-def distribution_chart(dist_df):
+def distribution_chart(dist_df, top_down=False):
+    """top_down=True lists rows first-to-last from the TOP of the chart (used for
+    form order, so Q1 is at the top like on the form). Default keeps the original
+    behavior (first row at the bottom), which is what weakest-first sorting relied on."""
     if dist_df.empty:
         st.info("No responses yet.")
         return
@@ -1028,7 +1052,8 @@ def distribution_chart(dist_df):
             ticksuffix="%", range=[-100, 100], gridcolor=THEME["chart_grid"],
             tickfont=dict(color=THEME["chart_font"]),
         ),
-        yaxis=dict(automargin=True, tickfont=dict(color=THEME["chart_font"])),
+        yaxis=dict(automargin=True, tickfont=dict(color=THEME["chart_font"]),
+                   **({"autorange": "reversed"} if top_down else {})),
         showlegend=False,
         height=90 + 40 * len(dist_df), margin=dict(t=10, b=10, l=10, r=10),
         plot_bgcolor=THEME["chart_bg"], paper_bgcolor=THEME["chart_bg"],
@@ -1532,16 +1557,27 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
                     st.markdown("**By Mentor / Faculty**")
                     grouped_breakdown_chart(group_avg(filt_resp, "mentor"), cat1_label, cat2_label)
 
-    section_header("🎯", "Question breakdown, weakest to strongest")
+    # One shared control for both question sections below. Defaults to the form's
+    # own question sequence (what people expect to see when they compare against the
+    # form); "Weakest first" restores the old ranking view for spotting problems fast.
+    q_order = st.radio(
+        "Order questions by",
+        ["Form order", "Weakest first"],
+        horizontal=True,
+        key=f"{key_prefix}_question_order",
+    )
+    by_form = q_order == "Form order"
+
+    section_header("🎯", "Question breakdown" + (", in form order" if by_form else ", weakest to strongest"))
     q1, q2 = st.columns(2)
     with q1:
         with st.container(border=True):
             st.markdown(f"**{cat1_label} questions**")
-            question_chart(question_ranking(filt_q, "cat1"), PALETTE["series1"], cat1_label)
+            question_chart(question_ranking(filt_q, "cat1", qmap, by_form), PALETTE["series1"], cat1_label)
     with q2:
         with st.container(border=True):
             st.markdown(f"**{cat2_label} questions**")
-            question_chart(question_ranking(filt_q, "cat2"), PALETTE["series2"], cat2_label)
+            question_chart(question_ranking(filt_q, "cat2", qmap, by_form), PALETTE["series2"], cat2_label)
 
     section_header("📊", "Response spread per question")
     st.caption("An average can hide a split opinion — this shows the actual mix of ratings, not just the mean.")
@@ -1549,11 +1585,11 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
     with d1:
         with st.container(border=True):
             st.markdown(f"**{cat1_label} questions**")
-            distribution_chart(question_distribution(filt_q, "cat1"))
+            distribution_chart(question_distribution(filt_q, "cat1", qmap, by_form), top_down=by_form)
     with d2:
         with st.container(border=True):
             st.markdown(f"**{cat2_label} questions**")
-            distribution_chart(question_distribution(filt_q, "cat2"))
+            distribution_chart(question_distribution(filt_q, "cat2", qmap, by_form), top_down=by_form)
 
     section_header("🔥", "Performance by question")
     st.caption("Where a mentor's blended average is hiding one specific weak spot.")

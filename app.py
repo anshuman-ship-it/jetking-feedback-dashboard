@@ -335,7 +335,7 @@ TECH_Q = [
     ("D5", "Does your mentor provide Presee's/Pre-reads materials for students to prepare before coming to class?", "Pre-read materials provided", "cat1"),
     ("D6", "Does your mentor display the content on the TV monitor in the class room uploaded to the Learnyst LMS? (Kingdemy)", "Content shown on TV monitor", "cat1"),
     ("D7", "Does your mentor consistently start classes on time?", "Classes start on time", "cat1"),
-    ("D8", "Are you able to understand the concepts and skills taught by your mentor, and do you feel confident in applying them?", "Understands & applies concepts", "cat1"),
+    ("D8", "Are you able to understand the concepts and skills taught by your mentor, and do you feel confident in applying them?", "Able to understand & apply concepts", "cat1"),
     ("B1", "Your mentor treats all students with respect and professionalism.", "Respect & professionalism", "cat2"),
     ("B2", "Your mentor encourages student participation and interaction during the session.", "Encourages participation", "cat2"),
     ("B3", "Your mentor is approachable and willing to clarify doubts.", "Approachable, clarifies doubts", "cat2"),
@@ -350,7 +350,7 @@ TECH_Q = [
 EMP_Q = [
     ("S1", "Does your mentor consistently start classes on time?", "Classes start on time", "cat1"),
     ("S2", "Are the Employability classes conducted according to the logsheet?", "Classes per logsheet", "cat1"),
-    ("S3", "Are you able to understand the topics taught by your mentor and are you able to apply them confidently?", "Understands & applies topics", "cat1"),
+    ("S3", "Are you able to understand the topics taught by your mentor and are you able to apply them confidently?", "Able to understand & apply topics", "cat1"),
     ("S4", "The session was engaging and interactive.", "Engaging & interactive", "cat1"),
     ("S5", "The activities helped you participate actively", "Activities encouraged participation", "cat1"),
     ("S6", "You felt comfortable expressing your thoughts and opinions.", "Comfortable expressing opinions", "cat1"),

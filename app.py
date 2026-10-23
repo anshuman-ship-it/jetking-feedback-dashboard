@@ -2638,7 +2638,7 @@ def main():
         tab_titles.append("Centre Infrastructure Feedback")
     if is_admin:
         tab_titles.append("📲 Telegram Registrations")
-        tabs = iter(st.tabs(tab_titles))
+    tabs = iter(st.tabs(tab_titles))
 
     if show_tech:
         with next(tabs):

@@ -15,6 +15,7 @@ Setup: see SETUP_GUIDE.md in this folder.
 
 import html
 import io
+import re
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -27,8 +28,19 @@ import pandas as pd
 import requests
 import bcrypt
 import plotly.graph_objects as go
-import plotly.graph_objects as go
 from telegram_registrations import render_telegram_registrations
+
+
+def _norm(s):
+    return re.sub(r"\s+", " ", str(s)).strip().lower()
+
+
+def find_col(df, *keywords):
+    """First column whose header contains every keyword (case/whitespace-insensitive)."""
+    for c in df.columns:
+        if all(k in _norm(c) for k in keywords):
+            return c
+    return None
 
 # gspread/google-auth back the self-service password store (see the
 # "Self-service password / first-login setup" section near build_authenticator()
@@ -639,6 +651,18 @@ def build_response_and_question_df(raw_df, centre_col, mentor_col, course_col, b
     """
     comment_cols = comment_cols or []
     special_cols = special_cols or []
+    # Header drift protection (added 11 Nov 2026, third recurrence): if the
+    # exact column name passed in isn't in the sheet, fall back to keyword
+    # matching instead of silently reading blanks. A blank mentor is what made
+    # the Mentor dropdown show only " — <Centre>" labels.
+    if mentor_col and mentor_col not in raw_df.columns:
+        mentor_col = find_col(raw_df, "mentor name") or mentor_col
+    if batch_col and batch_col not in raw_df.columns:
+        batch_col = find_col(raw_df, "batch code") or batch_col
+    if centre_col and centre_col not in raw_df.columns:
+        centre_col = find_col(raw_df, "centre name") or find_col(raw_df, "center name") or centre_col
+    if course_col and course_col not in raw_df.columns:
+        course_col = find_col(raw_df, "course name") or course_col
     resp_rows = []
     q_rows = []
     for i, r in raw_df.iterrows():
@@ -655,6 +679,8 @@ def build_response_and_question_df(raw_df, centre_col, mentor_col, course_col, b
         ts = pd.to_datetime(r.get(ts_col), errors="coerce")
         centre = normalize_centre_display(r.get(centre_col, ""))
         mentor = str(r.get(mentor_col, "")).strip() if mentor_col else ""
+        if mentor.lower() == "nan":
+            mentor = ""
         course = str(r.get(course_col, "")).strip()
         batch = str(r.get(batch_col, "")).strip()
         cat1_avg = sum(cat1_vals) / len(cat1_vals) if cat1_vals else None
@@ -1417,6 +1443,15 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
         return
     st.caption(f"📅 Data as of {fetched_at.strftime('%b %d, %Y, %I:%M %p')}")
 
+    # Visible warning if the mentor column can't be found even by keyword —
+    # so a future form edit shows up as a clear message, not a broken dropdown.
+    if mentor_col and mentor_col not in raw_df.columns and find_col(raw_df, "mentor name") is None:
+        st.warning(
+            f"Couldn't find the mentor column in the {form_name} sheet — the form's "
+            "headers may have changed again. Mentor filters and breakdowns will be blank "
+            "until this is fixed."
+        )
+
     response_df, question_df = build_response_and_question_df(
         raw_df, centre_col, mentor_col, course_col, batch_col, qmap,
         comment_cols=comment_cols, special_cols=special_cols
@@ -1478,7 +1513,10 @@ def render_dashboard(key_prefix, endpoint_key, form_name, cat1_label, cat2_label
             mentor_source_df = response_df[response_df["centre"] == centre_sel]
         mentor_options = ["All Mentors"]
         mentor_lookup = {}
-        for m in sorted(mentor_source_df["mentor"].dropna().unique().tolist()):
+        # Blank mentor values are skipped so the dropdown never shows a
+        # nameless " — <Centre>" entry.
+        mentor_names = [m for m in mentor_source_df["mentor"].dropna().unique().tolist() if str(m).strip()]
+        for m in sorted(mentor_names):
             # Still computed against the full (unscoped) response_df, not
             # mentor_source_df — so a mentor who also teaches at another centre
             # keeps showing that in the label even once a centre filter has
@@ -1795,8 +1833,9 @@ def render_overview_dashboard(centre_lock, mentor_lock):
         },
         {
             "key": "employability_url", "name": "Employability",
-            "centre_col": "Jetking Learning Centre Name", "mentor_col": "Mentor Name",
-            "course_col": "Course Name", "batch_col": "Batch Code",
+            "centre_col": "Jetking Learning Centre Name",
+            "mentor_col": "Employability Mentor Name (Please select from the dropdown)",
+            "course_col": "Course Name", "batch_col": "Batch Code (eg. 2627-JU-1234)",
             "qmap": EMP_Q, "cat1_label": "Session Content Avg", "cat2_label": "Mentor Behavior Avg",
             "has_mentor": True,
         },
@@ -2524,6 +2563,28 @@ def mentor_has_any_responses(endpoint_key, centre_col, mentor_col, course_col, b
 
 
 # ---------------------------------------------------------------------------
+# Sheet column names (single source of truth — update here if a form changes)
+# ---------------------------------------------------------------------------
+# load_sheet() converts line breaks in headers to spaces, so these use plain
+# spaces. build_response_and_question_df() also falls back to keyword matching
+# if any of these stop matching exactly.
+
+TECH_COLS = dict(
+    centre_col="Jetking Learning Centre Name",
+    mentor_col="Technical Mentor Name (Please select from the dropdown)",
+    course_col="Course Name",
+    batch_col="Batch Code (eg. 2627-JU-1234)",
+)
+
+EMP_COLS = dict(
+    centre_col="Jetking Learning Centre Name",
+    mentor_col="Employability Mentor Name (Please select from the dropdown)",
+    course_col="Course Name",
+    batch_col="Batch Code (eg. 2627-JU-1234)",
+)
+
+
+# ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
 
@@ -2603,15 +2664,12 @@ def main():
     # with its own "No responses yet" message.
     if mentor_lock:
         show_tech = mentor_has_any_responses(
-            endpoint_key="technical_url", centre_col="Jetking Learning Centre Name",
-            mentor_col="Technical Mentor Name (Please select from the dropdown)",
-            course_col="Course Name", batch_col="Batch Code (eg. 2627-JU-1234)", qmap=TECH_Q,
-            centre_lock=centre_lock, mentor_lock=mentor_lock,
+            endpoint_key="technical_url", qmap=TECH_Q,
+            centre_lock=centre_lock, mentor_lock=mentor_lock, **TECH_COLS,
         )
         show_emp = mentor_has_any_responses(
-            endpoint_key="employability_url", centre_col="Jetking Learning Centre Name",
-            mentor_col="Mentor Name", course_col="Course Name", batch_col="Batch Code", qmap=EMP_Q,
-            centre_lock=centre_lock, mentor_lock=mentor_lock,
+            endpoint_key="employability_url", qmap=EMP_Q,
+            centre_lock=centre_lock, mentor_lock=mentor_lock, **EMP_COLS,
         )
         show_infra = False
     else:
@@ -2649,15 +2707,12 @@ def main():
                 cat1_label="Session Delivery Avg",
                 cat2_label="Mentor Behavior Avg",
                 qmap=TECH_Q,
-                centre_col="Jetking Learning Centre Name",
-                mentor_col="Technical Mentor Name (Please select from the dropdown)",
-                course_col="Course Name",
-                batch_col="Batch Code (eg. 2627-JU-1234)",
                 comment_cols=TECH_COMMENT_COLS,
                 special_cols=TECH_SPECIAL_Q,
                 centre_lock=centre_lock,
                 mentor_lock=mentor_lock,
                 allow_raw_download=allow_raw_download,
+                **TECH_COLS,
             )
 
     if show_emp:
@@ -2669,15 +2724,12 @@ def main():
                 cat1_label="Session Content Avg",
                 cat2_label="Mentor Behavior Avg",
                 qmap=EMP_Q,
-                centre_col="Jetking Learning Centre Name",
-                mentor_col="Mentor Name",
-                course_col="Course Name",
-                batch_col="Batch Code",
                 comment_cols=EMP_COMMENT_COLS,
                 special_cols=EMP_SPECIAL_Q,
                 centre_lock=centre_lock,
                 mentor_lock=mentor_lock,
                 allow_raw_download=allow_raw_download,
+                **EMP_COLS,
             )
 
     if show_infra:
@@ -2698,7 +2750,6 @@ def main():
                 allow_raw_download=allow_raw_download,
             )
 
-            
     if is_admin:
         with next(tabs):
             render_telegram_registrations(is_admin=is_admin)

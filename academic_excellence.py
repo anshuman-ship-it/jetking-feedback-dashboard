@@ -252,6 +252,24 @@ def _render_form(h, key_prefix, cfg):
         return
     all_resp["auditor"] = df.loc[all_resp["_raw_index"], MERGED_AUDITOR_COL].values
 
+    # Self-audits (someone who is both an auditor and a trainer, e.g. Vishal
+    # Prasad, rating their own class) are left out of every score and listed
+    # here instead, so they can be checked and deleted from the sheet.
+    a_key = all_resp["auditor"].astype(str).str.strip().str.casefold()
+    t_key = all_resp["mentor"].astype(str).str.strip().str.casefold()
+    self_mask = (a_key != "") & (a_key == t_key)
+    if self_mask.any():
+        own = all_resp[self_mask]
+        st.warning(
+            f"{len(own)} observation(s) were submitted by the trainer about their own class, "
+            "so they're left out of every score below: "
+            + "; ".join(f"{r['mentor']} ({r['date'] or 'no date'}, {r['centre']})" for _, r in own.iterrows())
+            + ". Delete them from the response tab once checked."
+        )
+        all_resp = all_resp[~self_mask]
+        if all_resp.empty:
+            return
+
     # --- Filters: Centre → Trainer (scoped to centre) → Auditor ---
     f1, f2, f3, f4 = st.columns([2, 2, 2, 1])
     with f1:

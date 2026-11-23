@@ -29,6 +29,7 @@ import requests
 import bcrypt
 import plotly.graph_objects as go
 from telegram_registrations import render_telegram_registrations
+from academic_excellence import render_academic_excellence
 
 
 def _norm(s):
@@ -2625,7 +2626,9 @@ def main():
         st.stop()
 
     is_admin, centre_lock, mentor_lock = resolve_role(st.session_state.get("roles"))
-    if not is_admin and not centre_lock:
+    # "ae" = Academic Excellence team: sees only the audit dashboard.
+    is_ae = "ae" in (st.session_state.get("roles") or [])
+    if not is_admin and not centre_lock and not is_ae:
         # Note: deliberately NOT calling authenticator.logout() here. That
         # triggers a cookie-clearing rerun that flashes this message for
         # under a second before resetting to a bare sign-in form, which
@@ -2648,11 +2651,19 @@ def main():
             who = f"{', '.join(CENTRE_DISPLAY_NAMES[c] for c in centre_lock)} — {mentor_lock}"
         elif centre_lock:
             who = ", ".join(CENTRE_DISPLAY_NAMES[c] for c in centre_lock)
-        else:
+        elif is_admin:
             who = "Admin — all centres"
+        else:
+            who = "Academic Excellence team"
         st.caption(f"Signed in as **{st.session_state.get('name')}** · {who}")
     with top_r:
         authenticator.logout("Log out", location="main")
+
+    # Academic Excellence team login (role "ae" with no admin/centre role):
+    # only the audit dashboard, none of the student feedback tabs.
+    if is_ae and not is_admin and not centre_lock:
+        render_academic_excellence(globals())
+        return
 
     # A mentor-locked (trainer) login only sees tabs relevant to them: the
     # Infrastructure tab is centre-facility feedback, not about any one
@@ -2695,6 +2706,7 @@ def main():
     if show_infra:
         tab_titles.append("Centre Infrastructure Feedback")
     if is_admin:
+        tab_titles.append("🎓 Academic Excellence")
         tab_titles.append("📲 Telegram Registrations")
     tabs = iter(st.tabs(tab_titles))
 
@@ -2751,6 +2763,8 @@ def main():
             )
 
     if is_admin:
+        with next(tabs):
+            render_academic_excellence(globals())
         with next(tabs):
             render_telegram_registrations(is_admin=is_admin)
 

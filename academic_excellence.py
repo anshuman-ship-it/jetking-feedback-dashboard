@@ -151,6 +151,15 @@ def prepare_ae_raw(raw_df, mentor_prefix):
         return picked
 
     df[MERGED_TRAINER_COL] = df.apply(merge, axis=1) if len(df) else []
+
+    # Course Name changed from typed text to a dropdown on 24 Nov 2026, which
+    # leaves two "Course Name" columns in the sheet (pandas reads the second
+    # as "Course Name.1"). Use whichever one is filled in, newest first.
+    course_cols = [c for c in df.columns
+                   if _norm(c) == _norm(COURSE_COL) or _norm(c).startswith(_norm(COURSE_COL) + ".")]
+    if len(course_cols) > 1 and len(df):
+        df[COURSE_COL] = df.apply(
+            lambda r: next((v for v in (_clean(r.get(c)) for c in reversed(course_cols)) if v), ""), axis=1)
     df[MERGED_AUDITOR_COL] = df[auditor_col].map(_clean) if auditor_col else ""
     return df
 

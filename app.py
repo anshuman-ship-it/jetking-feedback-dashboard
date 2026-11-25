@@ -527,7 +527,7 @@ CENTRE_DISPLAY_NAMES = {
     "Vashi": "Vashi Learning Centre",
     "Laxminagar": "Laxminagar Learning Centre",
     "Maninagar": "Maninagar Learning Centre",
-    "Bhawaniopore": "Bhawaniopore Learning Centre",
+    "Bhawaniopore": "Bhawanipore Learning Centre",  # key kept: login roles use it
     "Khar": "Khar Learning Centre",
 }
 

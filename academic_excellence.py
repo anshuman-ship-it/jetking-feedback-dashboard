@@ -44,6 +44,9 @@ BEHAVIOUR_Q = [
     ("B6", "Mentor demonstrated patience while explaining difficult concepts.", "Patient explaining concepts", "cat2"),
     ("B7", "Mentor maintained discipline while ensuring a friendly classroom atmosphere.", "Discipline & friendly atmosphere", "cat2"),
     ("B8", "Mentor encouraged teamwork, collaboration, and peer learning.", "Encourages teamwork", "cat2"),
+    # Added 27 Nov 2026. Audit-only (not on the student forms), so B10 is left
+    # out of the Auditor vs Students comparison; placed before B9 as on the form.
+    ("B10", "Mentor is properly groomed and professionally dressed.", "Groomed & professionally dressed", "cat2"),
     ("B9", "Overall, you are satisfied with your mentor's teaching and mentoring approach.", "Overall mentor satisfaction", "cat2"),
 ]
 
@@ -63,6 +66,7 @@ AE_EMP_Q = [
     ("P4", "The session was engaging and interactive.", "Engaging & interactive", "cat1"),
     ("P5", "The activities helped the students participate actively", "Activities drove participation", "cat1"),
     ("P6", "Students were expressing thoughts and opinions.", "Students expressed opinions", "cat1"),
+    ("P7", "EFER model was followed?", "EFER model followed", "cat1"),  # added 27 Nov 2026
 ] + BEHAVIOUR_Q
 
 AE_FORMS = {
@@ -91,6 +95,10 @@ AE_FORMS = {
 }
 
 CAT2_LABEL = "Behavioural Parameters Avg"
+
+# Behavioural questions asked on BOTH the audit and the student forms (same
+# codes as TECH_Q / EMP_Q in app.py). Only these are compared.
+SHARED_CODES = ["B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9"]
 
 CENTRE_COL = "Jetking Learning Centre Name"
 AUDITOR_COL = "Your Full Name"
@@ -193,20 +201,24 @@ def compare_with_students(ae_q, ae_resp, st_resp, st_q):
 
     a = ae.groupby("_k").agg(
         Trainer=("mentor", "first"), Centre=("centre", lambda s: ", ".join(sorted(set(s)))),
-        Audits=("cat2", "count"), audit=("cat2", "mean"),
+        Audits=("cat2", "count"),
     )
+    # Audit side uses only the shared questions, so it lines up with the
+    # students' Mentor Behaviour average (B1–B9).
+    aq_all = ae_q[(ae_q["cat"] == "cat2") & ae_q["code"].isin(SHARED_CODES)]
+    a["audit"] = aq_all.assign(_k=key(aq_all["mentor"])).groupby("_k")["score"].mean()
     s = stu.groupby("_k").agg(Responses=("cat2", "count"), students=("cat2", "mean"))
     per_trainer = a.join(s, how="inner").reset_index(drop=True)
     per_trainer["Gap"] = per_trainer["audit"] - per_trainer["students"]
     per_trainer = per_trainer.sort_values("Gap", key=lambda g: g.abs(), ascending=False)
 
-    aq = ae_q[(ae_q["cat"] == "cat2") & key(ae_q["mentor"]).isin(trainers)]
-    sq = st_q[(st_q["cat"] == "cat2") & key(st_q["mentor"]).isin(trainers)]
+    aq = aq_all[key(aq_all["mentor"]).isin(trainers)]
+    sq = st_q[(st_q["cat"] == "cat2") & st_q["code"].isin(SHARED_CODES) & key(st_q["mentor"]).isin(trainers)]
     per_q = pd.DataFrame({
         "audit": aq.groupby("code")["score"].mean(),
         "students": sq.groupby("code")["score"].mean(),
     })
-    order = [code for code, _, _, _ in BEHAVIOUR_Q]
+    order = SHARED_CODES
     labels = {code: lbl for code, _, lbl, _ in BEHAVIOUR_Q}
     per_q = per_q.reindex([c for c in order if c in per_q.index])
     per_q["label"] = [labels[c] for c in per_q.index]
@@ -408,7 +420,7 @@ def _render_form(h, key_prefix, cfg):
 def _render_comparison(h, key_prefix, cfg, ae_resp, ae_q, centre_sel):
     h.section_header("⚖️", "Auditor vs Students — Behavioural questions")
     st.caption(
-        "The 9 Behavioural questions are the same on the audit form and the student "
+        "9 of the Behavioural questions are the same on the audit form and the student "
         f"{cfg['student_form']} form. This compares the auditor's rating with what students "
         "said about the same trainers (all student responses to date)."
     )
